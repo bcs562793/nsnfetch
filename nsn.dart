@@ -15,23 +15,21 @@ const _wsUrl = 'wss://rt.nesine.com/socket.io/'
     'Chrome%2F122.0.0.0%20Safari%2F537.36'
     '&EIO=4&transport=websocket';
 
-// Nesine ST string → Supabase status_short
+// Sadece D.A. ve MS
 const _statusMap = {
-  '1Y': '1H', '1H': '1H',
   'D.A.': 'HT',
-  '2Y': '2H', '2H': '2H',
-  'MS': 'FT',
+  'MS':   'FT',
 };
 
 final Map<int, _SbMatch> _matches = {};
 
 WebSocketChannel? _ws;
 Timer? _pingTimer;
-int _goalCount = 0, _writeCount = 0;
+int _writeCount = 0;
 
 Future<void> main() async {
   print('╔══════════════════════════════════════╗');
-  print('║  ⚡ Nesine Score Listener            ║');
+  print('║  ⚡ Nesine Status Listener           ║');
   print('╚══════════════════════════════════════╝');
 
   if (_sbUrl.isEmpty || _sbKey.isEmpty) {
@@ -44,7 +42,7 @@ Future<void> main() async {
       ..statusCode = 200
       ..headers.contentType = ContentType.json
       ..write(jsonEncode({'ok': true, 'matches': _matches.length,
-          'goals': _goalCount, 'writes': _writeCount}))
+          'writes': _writeCount}))
       ..close());
     print('🌐 Health: :$port');
   });
@@ -52,7 +50,7 @@ Future<void> main() async {
   await _loadMatches();
   Timer.periodic(const Duration(minutes: 5), (_) => _loadMatches());
   Timer.periodic(const Duration(minutes: 5), (_) =>
-    print('📊 Maç:${_matches.length} Gol:$_goalCount Yaz:$_writeCount'));
+    print('📊 Maç:${_matches.length} Yaz:$_writeCount'));
 
   while (true) {
     try { await _connect(); } catch (e) { print('❌ WS: $e'); }
@@ -64,7 +62,7 @@ Future<void> _loadMatches() async {
   try {
     final res = await http.get(
       Uri.parse('$_sbUrl/rest/v1/live_matches'
-          '?select=fixture_id,home_team,away_team,home_score,away_score,nesine_bid'
+          '?select=fixture_id,home_team,away_team,nesine_bid'
           '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE,NS)'
           '&nesine_bid=not.is.null'),
       headers: _sbHeaders(),
@@ -81,8 +79,6 @@ Future<void> _loadMatches() async {
         fixtureId: r['fixture_id'] as int,
         homeTeam:  (r['home_team'] ?? '').toString(),
         awayTeam:  (r['away_team'] ?? '').toString(),
-        homeScore: _int(r['home_score']) ?? 0,
-        awayScore: _int(r['away_score']) ?? 0,
       );
     }
     print('📋 ${_matches.length} maç yüklendi');
@@ -143,23 +139,11 @@ void _onEvent(String payload) {
       if (bid == null) continue;
 
       final st = m['ST'];
+      if (st is! String) continue;
+      final sbStatus = _statusMap[st];
+      if (sbStatus == null) continue;
 
-      // ── Status: ST string + _statusMap'te var ─────────────────
-      if (st is String && _statusMap.containsKey(st)) {
-        _onStatus(bid, st, _statusMap[st]!);
-        continue;
-      }
-
-      // ── Skor: ST==1 (int) + TS var ────────────────────────────
-      if (st != 1) continue;
-      final h = _int(m['H']);
-      final a = _int(m['A']);
-      if (h == null || a == null) continue;
-      if (h > 30 || a > 30) continue;
-      if (m.containsKey('EN')) continue;
-      if (!m.containsKey('TS')) continue;
-
-      _onScore(bid, m);
+      _onStatus(bid, st, sbStatus);
     }
   } catch (_) {}
 }
@@ -173,31 +157,6 @@ void _onStatus(int bid, String nesineStatus, String sbStatus) {
 
   _sbPatch(match.fixtureId, {
     'status_short': sbStatus,
-    'updated_at': DateTime.now().toIso8601String(),
-  });
-}
-
-void _onScore(int bid, Map m) {
-  final match = _matches[bid];
-  if (match == null) return;
-
-  final newH = _int(m['H']);
-  final newA = _int(m['A']);
-  final min  = _int(m['T']);
-  if (newH == null || newA == null) return;
-  if (newH == match.homeScore && newA == match.awayScore) return;
-
-  _goalCount++;
-  print('⚽ GOL! bid=$bid ${match.homeTeam} ${match.homeScore}-${match.awayScore} → $newH-$newA'
-      '${min != null ? " ($min\')" : ""}');
-
-  match.homeScore = newH;
-  match.awayScore = newA;
-
-  _sbPatch(match.fixtureId, {
-    'home_score': newH, 'away_score': newA,
-    'score_source': 'nesine',
-    if (min != null) 'elapsed_time': min,
     'updated_at': DateTime.now().toIso8601String(),
   });
 }
@@ -228,7 +187,6 @@ int? _int(dynamic v) {
 class _SbMatch {
   final int fixtureId;
   final String homeTeam, awayTeam;
-  int homeScore, awayScore;
   _SbMatch({required this.fixtureId, required this.homeTeam,
-      required this.awayTeam, required this.homeScore, required this.awayScore});
+      required this.awayTeam});
 }
