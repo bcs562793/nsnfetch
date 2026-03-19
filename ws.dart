@@ -44,8 +44,9 @@ void main() async {
   print('Her iki bağlantı da aynı room\'a girer.');
   print('Biri kopunca, diğeri o sırada kaç event almış → ölçülür.\n');
 
-  // A ve B paralel çalışır
+  // A hemen, B 2 saniye sonra bağlanır
   unawaited(_runLoop(_a, _b));
+  await Future.delayed(const Duration(seconds: 2));
   unawaited(_runLoop(_b, _a));
 
   // Her 20 saniyede özet
