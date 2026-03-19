@@ -22,7 +22,7 @@ int _goalCount = 0, _writeCount = 0;
 
 Future<void> main() async {
   print('╔══════════════════════════════════════╗');
-  print('║  ⚡ Nesine Score Listener v2         ║');
+  print('║  ⚡ Nesine Score Listener v3         ║');
   print('╚══════════════════════════════════════╝');
 
   if (_sbUrl.isEmpty || _sbKey.isEmpty) {
@@ -45,12 +45,16 @@ Future<void> main() async {
   Timer.periodic(const Duration(minutes: 5), (_) =>
     print('📊 Maç:${_matches.length} Gol:$_goalCount Yaz:$_writeCount'));
 
-
-  // A hemen, B 10 saniye sonra başlar
-  // 10s offset: sunucu aynı anda kesse bile reconnect'ler çakışmaz
+  // A=0s, B=10s, C=20s, D=30s — hepsi aktif dinler
+  // Offset'ler: sunucu aynı anda kesse bile reconnect'ler çakışmaz
+  // Duplicate patch'ler homeScore/awayScore eşitlik kontrolüyle bastırılır
   unawaited(_wsLoop('A'));
   await Future.delayed(const Duration(seconds: 10));
   unawaited(_wsLoop('B'));
+  await Future.delayed(const Duration(seconds: 10));
+  unawaited(_wsLoop('C'));
+  await Future.delayed(const Duration(seconds: 10));
+  unawaited(_wsLoop('D'));
 
   await Completer<void>().future;
 }
@@ -162,12 +166,9 @@ void _onScore(String name, int bid, Map m) {
 }
 
 // ─── HTTP Poll: kopunca skoru doğrudan Nesine'den çek ──────────────────────
-// Nesine'nin REST endpoint'i varsa buraya ekle.
-// Yoksa Supabase'deki mevcut skorla karşılaştır — en azından tutarsızlık tespit edilir.
 Future<void> _pollScores(String name) async {
   if (_matches.isEmpty) return;
   try {
-    // Supabase'den güncel skoru çek ve local state ile karşılaştır
     final ids = _matches.values.map((m) => m.fixtureId).join(',');
     final res = await http.get(
       Uri.parse('$_sbUrl/rest/v1/live_matches'
@@ -185,7 +186,6 @@ Future<void> _pollScores(String name) async {
       final dbA  = _int(r['away_score']) ?? 0;
       if (fid == null) continue;
 
-      // Local map'te bul
       final entry = _matches.entries
           .where((e) => e.value.fixtureId == fid)
           .firstOrNull;
