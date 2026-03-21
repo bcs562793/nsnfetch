@@ -61,9 +61,6 @@ Future<void> main() async {
     });
 
     // JS hatalarını yakala
-    page.onPageError.listen((err) {
-      print('   💥 PAGE ERROR: $err');
-    });
 
     print('\n[3/6] Sayfa açılıyor: bid=$bid');
     final sw = Stopwatch()..start();
