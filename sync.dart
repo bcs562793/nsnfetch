@@ -39,11 +39,13 @@ Future<void> main() async {
   print('   ${nList.length} futbol maçı bulundu');
 
   // 2. Supabase'den canlı maçlar
+  // FIX: NS kaldırıldı — GetLiveBetResults zaten sadece aktif maçları döndürür,
+  // NS maçlara nesine_bid yazılırsa listener henüz başlamamış maçlara skor yazar.
   print('📡 Supabase live_matches...');
   final sRes = await http.get(
     Uri.parse('$_sbUrl/rest/v1/live_matches'
         '?select=fixture_id,home_team,away_team'
-        '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE,NS)'),
+        '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE)'),
     headers: _sbHeaders(),
   ).timeout(const Duration(seconds: 15));
 
@@ -64,9 +66,12 @@ Future<void> main() async {
 
     Map? best; double bestScore = 0;
     for (final sb in sbList) {
-      final s = (_sim(nHome, (sb['home_team'] ?? '').toString()) +
-                 _sim(nAway, (sb['away_team'] ?? '').toString())) / 2;
-      if (s > bestScore && s >= 0.45) { bestScore = s; best = sb; }
+      final homeSim = _sim(nHome, (sb['home_team'] ?? '').toString());
+      final awaySim = _sim(nAway, (sb['away_team'] ?? '').toString());
+      // FIX: her iki taraf da en az 0.45 olmalı — sadece birinin tutması yetmez
+      if (homeSim < 0.45 || awaySim < 0.45) continue;
+      final s = (homeSim + awaySim) / 2;
+      if (s > bestScore) { bestScore = s; best = sb; }
     }
 
     if (best == null || bestScore < 0.45) {
