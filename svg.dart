@@ -1,17 +1,10 @@
 import 'dart:io';
 import 'package:puppeteer/puppeteer.dart';
 
-// URL formatı: /Iddaa/Mac-Merkezi/{tarih}/{bultinId}/{tip}/{bid}#matchId={sportradarId}
-// Bizim için sadece bid yeterli — sayfayı açınca widget render oluyor
-// Ama URL'yi tam bilmiyoruz, canli-sonuclar üzerinden deneyelim
-
 Future<void> main() async {
-  // Screenshot'taki URL'den aldık
   const fullUrl = 'https://www.nesine.com/Iddaa/Mac-Merkezi/20260321/2745678/1/2045680#matchId=61624508';
 
-  print('═══════════════════════════════════════');
-  print('🚀 [1/6] Browser başlatılıyor...');
-
+  print('🚀 Browser başlatılıyor...');
   final browser = await puppeteer.launch(
     headless: true,
     executablePath: Platform.environment['CHROME_PATH'],
@@ -22,15 +15,11 @@ Future<void> main() async {
       '--disable-gpu',
     ],
   );
-  print('   ✅ Browser açık');
 
   Page? page;
   try {
     page = await browser.newPage();
-
-    // Ekran boyutu — widget responsive olabilir
     await page.setViewport(DeviceViewport(width: 1280, height: 900));
-
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
       'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -40,146 +29,94 @@ Future<void> main() async {
     await page.setRequestInterception(true);
     page.onRequest.listen((req) {
       final url = req.url;
-      if (url.contains('bam.nr-data') ||
-          url.contains('google-analytics') ||
-          url.endsWith('.woff2') ||
-          url.endsWith('.woff')) {
+      if (url.contains('bam.nr-data') || url.contains('google-analytics')) {
         req.abort();
       } else {
         req.continueRequest();
       }
     });
 
-    // Sportradar isteklerini logla
+    // pitch-noise yüklendiğinde logla — SVG'nin yakın olduğunu gösterir
     page.onResponse.listen((res) {
-      final url = res.url;
-      if (url.contains('sportradar') || url.contains('betradar')) {
-        final icon = res.status == 200 ? '✅' : res.status == 304 ? '♻️' : '❌';
-        print('   $icon [${res.status}] $url');
+      if (res.url.contains('pitch-noise')) {
+        print('   🎯 pitch-noise yüklendi → SVG render başlıyor');
       }
     });
 
-    page.onConsole.listen((msg) {
-      if (msg.type == 'error') {
-        print('   🖥️  CONSOLE ERROR: ${msg.text}');
-      }
-    });
-
-    print('\n[2/6] Sayfa açılıyor...');
-    print('   URL: $fullUrl');
+    print('🔍 Sayfa açılıyor...');
     final sw = Stopwatch()..start();
-
-    await page.goto(
-      fullUrl,
-      wait: Until.networkIdle,
-      timeout: const Duration(seconds: 30),
-    );
+    await page.goto(fullUrl, wait: Until.networkIdle, timeout: const Duration(seconds: 40));
     print('   ✅ Sayfa yüklendi (${sw.elapsedMilliseconds}ms)');
 
-    // DOM'daki tüm srl-* class'larını logla
-    print('\n[3/6] DOM\'daki widget class\'ları taranıyor...');
-    final classes = await page.evaluate<List>('''() => {
-      return [...document.querySelectorAll('[class]')]
-        .flatMap(el => el.className.toString().split(' '))
-        .filter(c => c.startsWith('srl-') || c.startsWith('sr-') || c.startsWith('srm-') || c.startsWith('lmt'))
-        .filter((v, i, a) => a.indexOf(v) === i)
-        .slice(0, 30);
+    // pitch-noise geldikten sonra SVG DOM'a yazılıyor, biraz bekle
+    print('⏳ SVG render bekleniyor (6s)...');
+    await Future.delayed(const Duration(seconds: 6));
+
+    // DOM'daki tüm SVG'leri tara
+    print('\n🔎 DOM SVG taraması...');
+    final svgInfo = await page.evaluate<List>('''() => {
+      return [...document.querySelectorAll('svg')].map(svg => ({
+        id: svg.id,
+        classes: svg.className?.toString() ?? '',
+        parentClasses: svg.parentElement?.className?.toString() ?? '',
+        width: svg.getAttribute('width'),
+        height: svg.getAttribute('height'),
+        viewBox: svg.getAttribute('viewBox'),
+        childCount: svg.children.length,
+        outerLength: svg.outerHTML.length,
+        // Pitch SVG'sini tespit et: büyük viewBox veya çok child içeriyorsa
+        likelyPitch: svg.children.length > 5 && svg.outerHTML.length > 1000,
+      }));
     }''');
-    print('   Bulunan class\'lar:');
-    for (final c in classes) print('     · $c');
 
-    // Yeni selector'ları dene
-    final selectors = [
-      '.srl-lmt-live-container',
-      '.srl-lmt-wrapper',
-      '.sr-lmt-1-pitchbox__container',
-      '.srm-pitchview',
-    ];
-
-    String? foundSelector;
-    print('\n[4/6] Selector deneniyor...');
-    for (final sel in selectors) {
-      try {
-        await page.waitForSelector(sel, timeout: const Duration(seconds: 15));
-        print('   ✅ Bulundu: $sel');
-        foundSelector = sel;
-        break;
-      } catch (_) {
-        print('   ❌ Bulunamadı: $sel');
-      }
+    print('   Bulunan SVG sayısı: ${svgInfo.length}');
+    for (var i = 0; i < svgInfo.length; i++) {
+      final s = svgInfo[i];
+      print('   [$i] viewBox=${s['viewBox']} children=${s['childCount']} len=${s['outerLength']} pitch=${s['likelyPitch']}');
+      print('       parentClass=${s['parentClasses']}');
     }
 
-    if (foundSelector == null) {
-      print('\n❌ Hiçbir selector çalışmadı!');
-      final body = await page.evaluate<String>('() => document.body.innerHTML');
-      print('--- BODY snapshot (ilk 1000 char) ---');
-      print(body.substring(0, body.length.clamp(0, 1000)));
-      return;
-    }
-
-    print('\n[5/6] SVG render bekleniyor (3s)...');
-    await Future.delayed(const Duration(seconds: 3));
-
-    print('\n[6/6] SVG çekiliyor...');
+    // En büyük SVG'yi al (pitch en büyük olacak)
+    print('\n📥 En büyük SVG çekiliyor...');
     final result = await page.evaluate<Map>('''() => {
-      const selectors = [
-        '.srl-lmt-live-container',
-        '.srl-lmt-wrapper',
-        '.sr-lmt-1-pitchbox__container',
-      ];
+      const svgs = [...document.querySelectorAll('svg')];
+      if (svgs.length === 0) return {found: false, reason: 'hiç svg yok'};
 
-      let container = null;
-      let usedSel = '';
-      for (const sel of selectors) {
-        container = document.querySelector(sel);
-        if (container) { usedSel = sel; break; }
-      }
-
-      if (!container) return {found: false, reason: 'container yok'};
-
-      const svg = container.querySelector('svg');
-      if (!svg) {
-        return {
-          found: false,
-          reason: 'svg yok (' + usedSel + ')',
-          containerHtml: container.innerHTML.substring(0, 500),
-        };
-      }
+      // En uzun outerHTML'e sahip SVG = pitch
+      const biggest = svgs.reduce((a, b) =>
+        a.outerHTML.length > b.outerHTML.length ? a : b
+      );
 
       return {
         found: true,
-        selector: usedSel,
-        svgLength: svg.outerHTML.length,
-        svgPreview: svg.outerHTML.substring(0, 400),
-        viewBox: svg.getAttribute('viewBox'),
-        width: svg.getAttribute('width'),
-        height: svg.getAttribute('height'),
-        childCount: svg.children.length,
-        fullSvg: svg.outerHTML,
+        svgLength: biggest.outerHTML.length,
+        svgPreview: biggest.outerHTML.substring(0, 300),
+        viewBox: biggest.getAttribute('viewBox'),
+        childCount: biggest.children.length,
+        parentClass: biggest.parentElement?.className ?? '',
+        fullSvg: biggest.outerHTML,
       };
     }''');
 
     print('\n══════════ SONUÇ ══════════');
     if (result['found'] == true) {
-      print('✅ SVG başarıyla alındı!');
-      print('   selector   : ${result['selector']}');
+      print('✅ SVG alındı!');
       print('   viewBox    : ${result['viewBox']}');
-      print('   width      : ${result['width']}');
-      print('   height     : ${result['height']}');
       print('   childCount : ${result['childCount']}');
       print('   svgLength  : ${result['svgLength']} char');
-      print('\n--- SVG Preview ---');
+      print('   parentClass: ${result['parentClass']}');
+      print('\n--- Preview ---');
       print(result['svgPreview']);
-      print('───────────────────');
+      print('───────────────');
 
-      final file = File('pitch.svg');
-      await file.writeAsString(result['fullSvg'] as String);
-      print('\n💾 Kaydedildi: pitch.svg');
+      await File('pitch.svg').writeAsString(result['fullSvg'] as String);
+      print('\n💾 Kaydedildi: pitch.svg (${(result['svgLength'] as int)} char)');
     } else {
-      print('❌ SVG alınamadı: ${result['reason']}');
-      if (result['containerHtml'] != null) {
-        print('Container HTML: ${result['containerHtml']}');
-      }
+      print('❌ ${result['reason']}');
+      // Tüm body'yi dump et
+      final body = await page.evaluate<String>('() => document.body.innerHTML');
+      await File('body_dump.html').writeAsString(body);
+      print('📄 body_dump.html kaydedildi (${body.length} char)');
     }
 
     sw.stop();
@@ -188,6 +125,6 @@ Future<void> main() async {
   } finally {
     await page?.close();
     await browser.close();
-    print('🔒 Browser kapatıldı');
+    print('🔒 Kapatıldı');
   }
 }
