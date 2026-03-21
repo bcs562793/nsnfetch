@@ -74,20 +74,25 @@ Future<void> main() async {
       const svgs = [...container.querySelectorAll('svg')];
       if (svgs.length === 0) return {found: false, reason: 'container var ama svg yok'};
 
-      // En büyüğü al (pitch zemini + oyuncular)
-      const biggest = svgs.reduce((a, b) =>
-        a.outerHTML.length > b.outerHTML.length ? a : b
-      );
+      // İkisini birleştir — zemin + pozisyonlar
+      // İkisini birleştir: zemin SVG içine oyuncu katmanını ekle
+      const ground = svgs[0];
+      const combined = ground.cloneNode(true);
+      if (svgs.length > 1) {
+        svgs.slice(1).forEach(s => {
+          [...s.children].forEach(child => combined.appendChild(child.cloneNode(true)));
+        });
+      }
 
       return {
         found: true,
         source: 'sr-lmt-pitch-soccer-new__svg-container',
         svgCount: svgs.length,
-        svgLength: biggest.outerHTML.length,
-        svgPreview: biggest.outerHTML.substring(0, 300),
-        viewBox: biggest.getAttribute('viewBox'),
-        childCount: biggest.children.length,
-        fullSvg: biggest.outerHTML,
+        svgLength: combined.outerHTML.length,
+        svgPreview: combined.outerHTML.substring(0, 300),
+        viewBox: combined.getAttribute('viewBox'),
+        childCount: combined.children.length,
+        fullSvg: combined.outerHTML,
       };
     }''');
 
