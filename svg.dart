@@ -94,44 +94,44 @@ Future<void> main() async {
   }
 }
 
-// Nesine canlı bülteninden ilk futbol maçının URL'sini al
+// Canlı iddaa sayfasından ilk maçın detay URL'sini çek
 Future<String?> _getLiveMatchUrl() async {
   try {
     final res = await http.get(
-      Uri.parse('https://bulten.nesine.com/api/bulten/getlivebultenv3?eventVersion=0&oddVersion=0'),
+      Uri.parse('https://www.nesine.com/iddaa/canli-iddaa-canli-bahis?et=0&le=2'),
       headers: {
-        'User-Agent': 'Mozilla/5.0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
         'Referer': 'https://www.nesine.com/',
-        'Origin': 'https://www.nesine.com',
+        'Accept': 'text/html,application/xhtml+xml',
       },
-    ).timeout(const Duration(seconds: 10));
+    ).timeout(const Duration(seconds: 15));
 
-    if (res.statusCode != 200) {
-      print('   ⚠️ Bülten HTTP ${res.statusCode}');
+    print('   HTTP: ${res.statusCode}');
+    if (res.statusCode != 200) return null;
+
+    final body = res.body;
+
+    // Mac-Merkezi linklerini bul
+    // Örnek: /Iddaa/Mac-Merkezi/20260322/1234567/1/9876543
+    final regex = RegExp(r'/Iddaa/Mac-Merkezi/(\d{8})/(\d+)/1/(\d+)');
+    final matches = regex.allMatches(body).toList();
+
+    print('   Bulunan link sayısı: ${matches.length}');
+
+    if (matches.isEmpty) {
+      // Debug: body'nin bir kısmını yaz
+      print('   Body snippet: ${body.substring(0, body.length.clamp(0, 500))}');
       return null;
     }
 
-    final data = jsonDecode(res.body);
-    final events = data['Value']?['Events'] as List? ?? [];
+    // İlk maçı al
+    final m = matches.first;
+    final url = 'https://www.nesine.com${m.group(0)}';
+    print('   ✅ URL: $url');
+    return url;
 
-    for (final event in events) {
-      // Sadece futbol (SportTypeId=1) ve canlı maçlar
-      if (event['SportTypeId'] != 1) continue;
-      final bid = event['BID'];
-      final date = event['D']?.toString().replaceAll('-', '') ?? '';
-      final bno = event['BNO'];
-      final eid = event['EID'];
-      if (bid == null || date.isEmpty || bno == null || eid == null) continue;
-
-      final url = 'https://www.nesine.com/Iddaa/Mac-Merkezi/$date/$bno/1/$bid';
-      print('   ✅ Maç bulundu: ${event['HT']} vs ${event['AT']} → $url');
-      return url;
-    }
-
-    print('   ⚠️ Canlı futbol maçı yok');
-    return null;
   } catch (e) {
-    print('   ❌ Bülten hatası: $e');
+    print('   ❌ Hata: $e');
     return null;
   }
 }
