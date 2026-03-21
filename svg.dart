@@ -3,7 +3,6 @@ import 'package:puppeteer/puppeteer.dart';
 
 Future<void> main() async {
   final workspace = Platform.environment['GITHUB_WORKSPACE'] ?? '.';
-  final outPath = '$workspace/pitch.svg';
 
   print('🚀 Browser başlatılıyor...');
   final browser = await puppeteer.launch(
@@ -15,19 +14,13 @@ Future<void> main() async {
   try {
     final matchUrl = await _getLiveMatchUrl(browser);
     if (matchUrl == null) {
-      await File(outPath).writeAsString('<svg xmlns="http://www.w3.org/2000/svg"><text y="20">Canli mac yok</text></svg>');
+      print('❌ Canlı maç yok');
       exit(1);
     }
     print('🎯 URL: $matchUrl');
-
-    final svg = await _fetchPitchSvg(browser, matchUrl, outPath);
-    if (svg == null) exit(1);
-
-    await File(outPath).writeAsString(svg);
-    print('💾 Kaydedildi: $outPath (${svg.length} char)');
+    await _screenshot(browser, matchUrl, workspace);
   } catch (e, s) {
     print('💥 $e\n$s');
-    await File(outPath).writeAsString('<svg xmlns="http://www.w3.org/2000/svg"><text y="20">Hata</text></svg>');
     exit(1);
   } finally {
     await browser.close();
@@ -47,7 +40,6 @@ Future<String?> _getLiveMatchUrl(Browser browser) async {
     await page.goto('https://www.nesine.com/iddaa/canli-iddaa-canli-bahis?et=0&le=2',
         wait: Until.networkIdle, timeout: const Duration(seconds: 30));
     await Future.delayed(const Duration(seconds: 3));
-
     final links = await page.evaluate<List>('''() => {
       return [...document.querySelectorAll('a[href*="code="][href*="let="]')]
         .map(a => a.href).filter(h => h.includes('canli-iddaa'));
@@ -60,7 +52,7 @@ Future<String?> _getLiveMatchUrl(Browser browser) async {
   }
 }
 
-Future<String?> _fetchPitchSvg(Browser browser, String matchUrl, String outPath) async {
+Future<void> _screenshot(Browser browser, String matchUrl, String workspace) async {
   Page? page;
   try {
     page = await browser.newPage();
@@ -76,72 +68,39 @@ Future<String?> _fetchPitchSvg(Browser browser, String matchUrl, String outPath)
     });
 
     await page.goto(matchUrl, wait: Until.networkIdle, timeout: const Duration(seconds: 40));
-    print('   ✅ Sayfa yüklendi → ${page.url}');
+    print('   ✅ Yüklendi → ${page.url}');
     await Future.delayed(const Duration(seconds: 8));
 
-    // Her iki SVG'yi ayrı ayrı al, debug için kaydet
-    final result = await page.evaluate<Map>('''() => {
-      const container = document.querySelector('.sr-lmt-pitch-soccer-new__svg-container');
-      if (!container) return {found: false, reason: 'container yok'};
-
-      const svgs = [...container.querySelectorAll('svg')];
-      if (svgs.length === 0) return {found: false, reason: 'svg yok'};
-
-      // Debug: her SVG'nin içeriği
-      const debug = svgs.map((s, i) => ({
-        index: i,
-        len: s.outerHTML.length,
-        viewBox: s.getAttribute('viewBox'),
-        class: s.getAttribute('class'),
-        childCount: s.children.length,
-        preview: s.outerHTML.substring(0, 100),
-      }));
-
-      // SVG'leri tek bir SVG içinde üst üste koy — foreignObject yerine
-      // Her SVG'nin içeriğini wrapper SVG'ye ekle
-      const wrapper = svgs[0].cloneNode(true);
-      // wrapper'daki defs'i koru, diğer svglerin içeriğini ekle
-      for (let i = 1; i < svgs.length; i++) {
-        const s = svgs[i];
-        // defs varsa wrapper defs'e ekle
-        const srcDefs = s.querySelector('defs');
-        const dstDefs = wrapper.querySelector('defs');
-        if (srcDefs && dstDefs) {
-          [...srcDefs.children].forEach(c => dstDefs.appendChild(c.cloneNode(true)));
-        } else if (srcDefs) {
-          wrapper.appendChild(srcDefs.cloneNode(true));
-        }
-        // defs dışındaki elementleri ekle
-        [...s.children].forEach(child => {
-          if (child.tagName !== 'defs') {
-            wrapper.appendChild(child.cloneNode(true));
-          }
-        });
-      }
-
-      return {
-        found: true,
-        svgCount: svgs.length,
-        debug: debug,
-        fullSvg: wrapper.outerHTML,
-        svgLength: wrapper.outerHTML.length,
-      };
+    // Pitch container bounding box
+    final box = await page.evaluate<Map>('''() => {
+      const el = document.querySelector('.sr-lmt-pitch-soccer-new__svg-container')
+               ?? document.querySelector('[class*="lmt-pitch"]');
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return {x: r.x, y: r.y, width: r.width, height: r.height};
     }''');
 
-    if (result['found'] != true) {
-      print('❌ ${result['reason']}');
-      return null;
+    if (box == null) {
+      print('❌ Container bulunamadı, tam sayfa alınıyor');
+      await page.screenshot(output: File('$workspace/pitch_full.png').openWrite(), fullPage: false);
+      return;
     }
 
-    // Debug bilgisi
-    print('   SVG katman sayısı: ${result['svgCount']}');
-    final debugList = result['debug'] as List;
-    for (final d in debugList) {
-      print('   [${d['index']}] class=${d['class']} len=${d['len']} children=${d['childCount']}');
-      print('        preview: ${d['preview']}');
-    }
+    print('   📐 Box: ${box['x']},${box['y']} ${box['width']}x${box['height']}');
 
-    return result['fullSvg'] as String;
+    final pngPath = '$workspace/pitch.png';
+    await page.screenshot(
+      output: File(pngPath).openWrite(),
+      clip: Rectangle(
+        (box['x'] as num).toDouble(),
+        (box['y'] as num).toDouble(),
+        (box['width'] as num).toDouble(),
+        (box['height'] as num).toDouble(),
+      ),
+    );
+
+    final size = await File(pngPath).length();
+    print('💾 Kaydedildi: $pngPath ($size byte)');
   } finally {
     await page?.close();
   }
