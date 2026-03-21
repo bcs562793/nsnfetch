@@ -1,81 +1,63 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:puppeteer/puppeteer.dart';
+import 'package:http/http.dart' as http;
 
 Future<void> main() async {
-  const fullUrl = 'https://www.nesine.com/Iddaa/Mac-Merkezi/20260321/2745678/1/2045680#matchId=61624508';
+  final workspace = Platform.environment['GITHUB_WORKSPACE'] ?? '.';
+  final outPath = '$workspace/pitch.svg';
+
+  print('📡 Canlı maçlar alınıyor...');
+  final matchUrl = await _getLiveMatchUrl();
+  if (matchUrl == null) {
+    print('❌ Canlı futbol maçı bulunamadı');
+    await File(outPath).writeAsString('<svg xmlns="http://www.w3.org/2000/svg"><text y="20">Canli mac yok</text></svg>');
+    exit(1);
+  }
+  print('🎯 Maç URL: $matchUrl');
 
   print('🚀 Browser başlatılıyor...');
   final browser = await puppeteer.launch(
     headless: true,
     executablePath: Platform.environment['CHROME_PATH'],
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-    ],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
   );
 
   Page? page;
   try {
     page = await browser.newPage();
     await page.setViewport(DeviceViewport(width: 1280, height: 900));
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-      'AppleWebKit/537.36 (KHTML, like Gecko) '
-      'Chrome/122.0.0.0 Safari/537.36',
-    );
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36');
 
     await page.setRequestInterception(true);
     page.onRequest.listen((req) {
-      final url = req.url;
-      if (url.contains('bam.nr-data') || url.contains('google-analytics')) {
+      if (req.url.contains('bam.nr-data') || req.url.contains('google-analytics')) {
         req.abort();
       } else {
         req.continueRequest();
       }
     });
-
     page.onResponse.listen((res) {
-      if (res.url.contains('pitch-noise')) {
-        print('   🎯 pitch-noise yüklendi');
-      }
+      if (res.url.contains('pitch-noise')) print('   🎯 pitch-noise yüklendi');
     });
 
     print('🔍 Sayfa açılıyor...');
     final sw = Stopwatch()..start();
-    await page.goto(fullUrl, wait: Until.networkIdle, timeout: const Duration(seconds: 40));
-    print('   ✅ Sayfa yüklendi (${sw.elapsedMilliseconds}ms)');
+    await page.goto(matchUrl, wait: Until.networkIdle, timeout: const Duration(seconds: 40));
+    print('   ✅ Yüklendi (${sw.elapsedMilliseconds}ms)');
 
-    print('⏳ Render bekleniyor (6s)...');
-    await Future.delayed(const Duration(seconds: 6));
+    print('⏳ Render bekleniyor (8s)...');
+    await Future.delayed(const Duration(seconds: 8));
 
-    // Pitch container'ını direkt hedef al
     final result = await page.evaluate<Map>('''() => {
-      // İlk pitch SVG container
       const container = document.querySelector('.sr-lmt-pitch-soccer-new__svg-container');
       if (!container) {
-        // Fallback: viewBox 520x292 olan SVG'yi bul
-        const allSvgs = [...document.querySelectorAll('svg')];
-        const pitchSvg = allSvgs.find(s => s.getAttribute('viewBox') === '0 0 520 292');
-        if (!pitchSvg) return {found: false, reason: 'ne container ne SVG bulundu'};
-        return {
-          found: true,
-          source: 'viewBox fallback',
-          svgLength: pitchSvg.outerHTML.length,
-          svgPreview: pitchSvg.outerHTML.substring(0, 300),
-          viewBox: pitchSvg.getAttribute('viewBox'),
-          childCount: pitchSvg.children.length,
-          fullSvg: pitchSvg.outerHTML,
-        };
+        const count = document.querySelectorAll('svg').length;
+        return {found: false, reason: 'container yok (toplam svg: ' + count + ')'};
       }
-
-      // Container içindeki ilk SVG (top layer - oyuncu pozisyonları)
       const svgs = [...container.querySelectorAll('svg')];
-      if (svgs.length === 0) return {found: false, reason: 'container var ama svg yok'};
+      if (svgs.length === 0) return {found: false, reason: 'container var svg yok'};
 
-      // İkisini birleştir — zemin + pozisyonlar
-      // İkisini birleştir: zemin SVG içine oyuncu katmanını ekle
       const ground = svgs[0];
       const combined = ground.cloneNode(true);
       if (svgs.length > 1) {
@@ -83,48 +65,73 @@ Future<void> main() async {
           [...s.children].forEach(child => combined.appendChild(child.cloneNode(true)));
         });
       }
-
       return {
         found: true,
-        source: 'sr-lmt-pitch-soccer-new__svg-container',
-        svgCount: svgs.length,
+        source: svgs.length + ' svg birlestirildi',
         svgLength: combined.outerHTML.length,
-        svgPreview: combined.outerHTML.substring(0, 300),
         viewBox: combined.getAttribute('viewBox'),
-        childCount: combined.children.length,
         fullSvg: combined.outerHTML,
       };
     }''');
 
-    print('\n══════════ SONUÇ ══════════');
     if (result['found'] == true) {
-      print('✅ Pitch SVG alındı!');
-      print('   kaynak     : ${result['source']}');
-      print('   viewBox    : ${result['viewBox']}');
-      print('   childCount : ${result['childCount']}');
-      print('   svgLength  : ${result['svgLength']} char');
-      if (result['svgCount'] != null) {
-        print('   svgCount   : ${result['svgCount']} (container içinde)');
-      }
-      print('\n--- Preview ---');
-      print(result['svgPreview']);
-      print('───────────────');
-
-      final workspace = Platform.environment['GITHUB_WORKSPACE'] ?? '.';
-      final outPath = '$workspace/pitch.svg';
-      await File(outPath).writeAsString(result['fullSvg'] as String);
-      print('   path: $outPath');
-      print('\n💾 Kaydedildi: pitch.svg');
+      print('✅ SVG: ${result['source']} | ${result['svgLength']} char');
+      final file = File(outPath);
+      await file.writeAsString(result['fullSvg'] as String);
+      print('💾 Kaydedildi: $outPath');
     } else {
       print('❌ ${result['reason']}');
+      await File(outPath).writeAsString('<svg xmlns="http://www.w3.org/2000/svg"><text y="20">${result['reason']}</text></svg>');
+      exit(1);
     }
-
-    sw.stop();
-    print('\n⏱️  Toplam: ${sw.elapsedMilliseconds}ms');
-
+  } catch (e, s) {
+    print('💥 $e\n$s');
+    await File(outPath).writeAsString('<svg xmlns="http://www.w3.org/2000/svg"><text y="20">Hata</text></svg>');
+    exit(1);
   } finally {
     await page?.close();
     await browser.close();
-    print('🔒 Kapatıldı');
+  }
+}
+
+// Nesine canlı bülteninden ilk futbol maçının URL'sini al
+Future<String?> _getLiveMatchUrl() async {
+  try {
+    final res = await http.get(
+      Uri.parse('https://bulten.nesine.com/api/bulten/getlivebultenv3?eventVersion=0&oddVersion=0'),
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Referer': 'https://www.nesine.com/',
+        'Origin': 'https://www.nesine.com',
+      },
+    ).timeout(const Duration(seconds: 10));
+
+    if (res.statusCode != 200) {
+      print('   ⚠️ Bülten HTTP ${res.statusCode}');
+      return null;
+    }
+
+    final data = jsonDecode(res.body);
+    final events = data['Value']?['Events'] as List? ?? [];
+
+    for (final event in events) {
+      // Sadece futbol (SportTypeId=1) ve canlı maçlar
+      if (event['SportTypeId'] != 1) continue;
+      final bid = event['BID'];
+      final date = event['D']?.toString().replaceAll('-', '') ?? '';
+      final bno = event['BNO'];
+      final eid = event['EID'];
+      if (bid == null || date.isEmpty || bno == null || eid == null) continue;
+
+      final url = 'https://www.nesine.com/Iddaa/Mac-Merkezi/$date/$bno/1/$bid';
+      print('   ✅ Maç bulundu: ${event['HT']} vs ${event['AT']} → $url');
+      return url;
+    }
+
+    print('   ⚠️ Canlı futbol maçı yok');
+    return null;
+  } catch (e) {
+    print('   ❌ Bülten hatası: $e');
+    return null;
   }
 }
