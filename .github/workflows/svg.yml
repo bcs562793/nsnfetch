@@ -25,4 +25,4 @@ jobs:
         run: dart pub get
 
       - name: SVG çek
-        run: dart run pitch_svg_test.dart
+        run: dart run svg.dart
