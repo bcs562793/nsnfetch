@@ -1,8 +1,6 @@
 name: Pitch SVG Fetcher
 
 on:
-  schedule:
-    
   workflow_dispatch:
 
 jobs:
