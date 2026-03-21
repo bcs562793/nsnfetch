@@ -1,20 +1,9 @@
 import 'dart:io';
-import 'dart:convert';
 import 'package:puppeteer/puppeteer.dart';
-import 'package:http/http.dart' as http;
 
 Future<void> main() async {
   final workspace = Platform.environment['GITHUB_WORKSPACE'] ?? '.';
   final outPath = '$workspace/pitch.svg';
-
-  print('📡 Canlı maçlar alınıyor...');
-  final matchUrl = await _getLiveMatchUrl();
-  if (matchUrl == null) {
-    print('❌ Canlı futbol maçı bulunamadı');
-    await File(outPath).writeAsString('<svg xmlns="http://www.w3.org/2000/svg"><text y="20">Canli mac yok</text></svg>');
-    exit(1);
-  }
-  print('🎯 Maç URL: $matchUrl');
 
   print('🚀 Browser başlatılıyor...');
   final browser = await puppeteer.launch(
@@ -23,6 +12,105 @@ Future<void> main() async {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
   );
 
+  try {
+    // ── 1. Canlı maç listesinden URL al ──────────────────────────
+    print('\n📡 Canlı maç listesi açılıyor...');
+    final matchUrl = await _getLiveMatchUrl(browser);
+    if (matchUrl == null) {
+      print('❌ Canlı futbol maçı bulunamadı');
+      await File(outPath).writeAsString('<svg xmlns="http://www.w3.org/2000/svg"><text y="20">Canli mac yok</text></svg>');
+      exit(1);
+    }
+    print('🎯 Maç URL: $matchUrl');
+
+    // ── 2. Maç sayfasından SVG al ─────────────────────────────────
+    final svg = await _fetchPitchSvg(browser, matchUrl);
+    if (svg == null) {
+      await File(outPath).writeAsString('<svg xmlns="http://www.w3.org/2000/svg"><text y="20">SVG alinamadi</text></svg>');
+      exit(1);
+    }
+
+    await File(outPath).writeAsString(svg);
+    print('💾 Kaydedildi: $outPath (${svg.length} char)');
+
+  } catch (e, s) {
+    print('💥 $e\n$s');
+    await File(outPath).writeAsString('<svg xmlns="http://www.w3.org/2000/svg"><text y="20">Hata</text></svg>');
+    exit(1);
+  } finally {
+    await browser.close();
+  }
+}
+
+// ── Canlı maç listesini puppeteer ile aç, ilk maç linkini al ────
+Future<String?> _getLiveMatchUrl(Browser browser) async {
+  Page? page;
+  try {
+    page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36');
+
+    await page.setRequestInterception(true);
+    page.onRequest.listen((req) {
+      // Sadece HTML ve JS geçsin, rest engellensin
+      if (req.url.contains('bam.nr-data') || req.url.contains('google-analytics') ||
+          req.url.endsWith('.png') || req.url.endsWith('.jpg') ||
+          req.url.endsWith('.woff2') || req.url.endsWith('.woff')) {
+        req.abort();
+      } else {
+        req.continueRequest();
+      }
+    });
+
+    await page.goto(
+      'https://www.nesine.com/iddaa/canli-iddaa-canli-bahis?et=0&le=2',
+      wait: Until.networkIdle,
+      timeout: const Duration(seconds: 30),
+    );
+
+    // Maç linklerinin yüklenmesini bekle
+    await Future.delayed(const Duration(seconds: 3));
+
+    // ?code=xxx&let=1 formatındaki linkleri bul
+    final links = await page.evaluate<List>('''() => {
+      const anchors = [...document.querySelectorAll('a[href*="code="][href*="let="]')];
+      return anchors.map(a => a.href).filter(h => h.includes('canli-iddaa'));
+    }''');
+
+    print('   Bulunan link sayısı: ${links.length}');
+
+    if (links.isEmpty) {
+      // Alternatif: Mac-Merkezi linkleri
+      final links2 = await page.evaluate<List>('''() => {
+        return [...document.querySelectorAll('a[href*="Mac-Merkezi"]')]
+          .map(a => a.href);
+      }''');
+      print('   Mac-Merkezi link sayısı: ${links2.length}');
+      if (links2.isNotEmpty) {
+        print('   ✅ ${links2.first}');
+        return links2.first as String;
+      }
+
+      // Debug: ne var sayfada
+      final sample = await page.evaluate<String>('''() => {
+        return [...document.querySelectorAll('a')].slice(0, 10).map(a => a.href).join('\\n');
+      }''');
+      print('   İlk 10 link:\n$sample');
+      return null;
+    }
+
+    // ?code=xxx&let=1 linkini Mac-Merkezi URL'sine dönüştür
+    // Önce bu linki aç, yönlendirme yapıyor mu bak
+    final liveLink = links.first as String;
+    print('   ✅ Canlı link: $liveLink');
+    return liveLink;
+
+  } finally {
+    await page?.close();
+  }
+}
+
+// ── Maç sayfasından pitch SVG'yi al ─────────────────────────────
+Future<String?> _fetchPitchSvg(Browser browser, String matchUrl) async {
   Page? page;
   try {
     page = await browser.newPage();
@@ -41,12 +129,12 @@ Future<void> main() async {
       if (res.url.contains('pitch-noise')) print('   🎯 pitch-noise yüklendi');
     });
 
-    print('🔍 Sayfa açılıyor...');
+    print('🔍 Maç sayfası açılıyor...');
     final sw = Stopwatch()..start();
     await page.goto(matchUrl, wait: Until.networkIdle, timeout: const Duration(seconds: 40));
-    print('   ✅ Yüklendi (${sw.elapsedMilliseconds}ms)');
+    print('   ✅ Yüklendi (${sw.elapsedMilliseconds}ms) → ${page.url}');
 
-    print('⏳ Render bekleniyor (8s)...');
+    print('⏳ SVG render bekleniyor (8s)...');
     await Future.delayed(const Duration(seconds: 8));
 
     final result = await page.evaluate<Map>('''() => {
@@ -58,80 +146,29 @@ Future<void> main() async {
       const svgs = [...container.querySelectorAll('svg')];
       if (svgs.length === 0) return {found: false, reason: 'container var svg yok'};
 
-      const ground = svgs[0];
-      const combined = ground.cloneNode(true);
+      const ground = svgs[0].cloneNode(true);
       if (svgs.length > 1) {
         svgs.slice(1).forEach(s => {
-          [...s.children].forEach(child => combined.appendChild(child.cloneNode(true)));
+          [...s.children].forEach(child => ground.appendChild(child.cloneNode(true)));
         });
       }
       return {
         found: true,
-        source: svgs.length + ' svg birlestirildi',
-        svgLength: combined.outerHTML.length,
-        viewBox: combined.getAttribute('viewBox'),
-        fullSvg: combined.outerHTML,
+        source: svgs.length + ' svg',
+        svgLength: ground.outerHTML.length,
+        viewBox: ground.getAttribute('viewBox'),
+        fullSvg: ground.outerHTML,
       };
     }''');
 
     if (result['found'] == true) {
-      print('✅ SVG: ${result['source']} | ${result['svgLength']} char');
-      final file = File(outPath);
-      await file.writeAsString(result['fullSvg'] as String);
-      print('💾 Kaydedildi: $outPath');
+      print('✅ SVG alındı: ${result['source']} | ${result['svgLength']} char');
+      return result['fullSvg'] as String;
     } else {
       print('❌ ${result['reason']}');
-      await File(outPath).writeAsString('<svg xmlns="http://www.w3.org/2000/svg"><text y="20">${result['reason']}</text></svg>');
-      exit(1);
-    }
-  } catch (e, s) {
-    print('💥 $e\n$s');
-    await File(outPath).writeAsString('<svg xmlns="http://www.w3.org/2000/svg"><text y="20">Hata</text></svg>');
-    exit(1);
-  } finally {
-    await page?.close();
-    await browser.close();
-  }
-}
-
-// Canlı iddaa sayfasından ilk maçın detay URL'sini çek
-Future<String?> _getLiveMatchUrl() async {
-  try {
-    final res = await http.get(
-      Uri.parse('https://www.nesine.com/iddaa/canli-iddaa-canli-bahis?et=0&le=2'),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
-        'Referer': 'https://www.nesine.com/',
-        'Accept': 'text/html,application/xhtml+xml',
-      },
-    ).timeout(const Duration(seconds: 15));
-
-    print('   HTTP: ${res.statusCode}');
-    if (res.statusCode != 200) return null;
-
-    final body = res.body;
-
-    // Mac-Merkezi linklerini bul
-    // Örnek: /Iddaa/Mac-Merkezi/20260322/1234567/1/9876543
-    final regex = RegExp(r'/Iddaa/Mac-Merkezi/(\d{8})/(\d+)/1/(\d+)');
-    final matches = regex.allMatches(body).toList();
-
-    print('   Bulunan link sayısı: ${matches.length}');
-
-    if (matches.isEmpty) {
-      // Debug: body'nin bir kısmını yaz
-      print('   Body snippet: ${body.substring(0, body.length.clamp(0, 500))}');
       return null;
     }
-
-    // İlk maçı al
-    final m = matches.first;
-    final url = 'https://www.nesine.com${m.group(0)}';
-    print('   ✅ URL: $url');
-    return url;
-
-  } catch (e) {
-    print('   ❌ Hata: $e');
-    return null;
+  } finally {
+    await page?.close();
   }
 }
