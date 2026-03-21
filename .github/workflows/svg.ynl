@@ -1,0 +1,28 @@
+name: Pitch SVG Fetcher
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  fetch-svg:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dart SDK kur
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Chrome kur
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Bağımlılıkları yükle
+        run: dart pub get
+
+      - name: SVG çek
+        run: dart run pitch_svg_test.dart
