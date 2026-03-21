@@ -110,7 +110,10 @@ Future<void> main() async {
       print(result['svgPreview']);
       print('───────────────');
 
-      await File('pitch.svg').writeAsString(result['fullSvg'] as String);
+      final workspace = Platform.environment['GITHUB_WORKSPACE'] ?? '.';
+      final outPath = '$workspace/pitch.svg';
+      await File(outPath).writeAsString(result['fullSvg'] as String);
+      print('   path: $outPath');
       print('\n💾 Kaydedildi: pitch.svg');
     } else {
       print('❌ ${result['reason']}');
