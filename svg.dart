@@ -83,8 +83,8 @@ Future<void> _initMatch() async {
       else req.continueRequest();
     });
     await listPage.goto('https://www.nesine.com/iddaa/canli-iddaa-canli-bahis?et=0&le=2',
-        wait: Until.networkIdle, timeout: const Duration(seconds: 30));
-    await Future.delayed(const Duration(seconds: 2));
+wait: Until.domContentLoaded, timeout: const Duration(seconds: 45));
+await Future.delayed(const Duration(seconds: 5));
 
     final links = await listPage.evaluate<List>('''() => {
       return [...document.querySelectorAll('a[href*="code="][href*="let="]')]
@@ -96,7 +96,7 @@ Future<void> _initMatch() async {
     _currentMatchUrl = links.first as String;
     print('   📍 URL: $_currentMatchUrl');
 
-    await page.goto(_currentMatchUrl!, wait: Until.networkIdle, timeout: const Duration(seconds: 40));
+await page.goto(_currentMatchUrl!, wait: Until.domContentLoaded, timeout: const Duration(seconds: 45));
     await Future.any([completer.future, Future.delayed(const Duration(seconds: 15))]);
     await page.close();
   } finally {
