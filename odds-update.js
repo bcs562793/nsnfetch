@@ -1,6 +1,7 @@
 /**
- * SCOREPOP — odds-update.js  (v2)
+ * SCOREPOP — odds-update.js  (v3)
  * Gerçek Nesine yapısına göre: sg.EA array, HN/AN, MA/MTID/OCA
+ * v3: MTID log eklendi, eşleşme algoritması düzeltildi (her iki takım da min 0.35)
  */
 'use strict';
 
@@ -67,6 +68,7 @@ function tokenSim(a, b) {
    MTID=14  → Alt/Üst (SOV=çizgi) (N:1=alt, N:2=üst)
    MTID=25  → Karşılıklı Gol  (N:1=var, N:2=yok)
    (MTID'ler gözlemle eşleştirildi — SOV ile çizgi belirlenir)
+   Gerçek MTID listesi log çıktısından okunacak ve burası güncellenecek.
 ──────────────────────────────────────────── */
 function parseMarkets(maArr, matchName) {
   const markets = {};
@@ -76,7 +78,8 @@ function parseMarkets(maArr, matchName) {
   if (matchName) {
     console.log(`\n  [MTIDs] ${matchName}`);
     maArr.forEach(m => {
-      console.log(`    MTID=${m.MTID} SOV=${m.SOV ?? '-'} OCA_count=${(m.OCA||[]).length} OCA_N=[${(m.OCA||[]).map(o=>o.N).join(',')}] örnek_oran=${(m.OCA||[])[0]?.O ?? '-'}`);
+      const ocaStr = (m.OCA || []).map(o => `N${o.N}=${o.O}`).join(' | ');
+      console.log(`    MTID=${m.MTID} SOV=${m.SOV ?? '-'} OCA_count=${(m.OCA||[]).length} → ${ocaStr}`);
     });
   }
 
@@ -98,18 +101,35 @@ function parseMarkets(maArr, matchName) {
 
     /* Alt / Üst — SOV değerine göre ayırt et */
     if (mtid === 14 && oca.length === 2) {
-      if (Math.abs(sov - 2.5) < 0.01) {
+      if (Math.abs(sov - 0.5) < 0.01) {
+        markets['ou05'] = { under: get(1), over: get(2) };
+      } else if (Math.abs(sov - 1.5) < 0.01) {
+        markets['ou15'] = { under: get(1), over: get(2) };
+      } else if (Math.abs(sov - 2.5) < 0.01) {
         markets['ou25'] = { under: get(1), over: get(2) };
       } else if (Math.abs(sov - 3.5) < 0.01) {
         markets['ou35'] = { under: get(1), over: get(2) };
-      } else if (Math.abs(sov - 1.5) < 0.01) {
-        markets['ou15'] = { under: get(1), over: get(2) };
+      } else if (Math.abs(sov - 4.5) < 0.01) {
+        markets['ou45'] = { under: get(1), over: get(2) };
+      } else {
+        /* Bilinmeyen çizgi — SOV değeriyle kaydet */
+        const key = `ou_${String(sov).replace('.','_')}`;
+        markets[key] = { under: get(1), over: get(2), line: sov };
       }
     }
 
     /* Karşılıklı Gol */
     if (mtid === 25 && oca.length === 2) {
       markets['btts'] = { yes: get(1), no: get(2) };
+    }
+
+    /* ── Aşağıdaki MTID'ler log çıktısına göre eklenecek ──
+       Şu an bilinmeyen tüm MTID'leri de ham olarak kaydet
+       ki log'dan hangi ID'nin ne olduğunu görebilelim      */
+    const knownMtids = new Set([1, 2, 14, 25]);
+    if (!knownMtids.has(mtid) && oca.length > 0) {
+      const key = `mtid_${mtid}_sov_${String(sov).replace('.','_')}`;
+      markets[key] = Object.fromEntries(oca.map(o => [`n${o.N}`, +o.O]));
     }
   }
   return markets;
@@ -150,32 +170,45 @@ async function run() {
   console.log(`[Odds] Nesine'de ${events.length} futbol etkinliği`);
 
   /* 4. Eşleştir */
-  const THRESHOLD = 0.45; // kısaltmalar için düşürüldü
+  const THRESHOLD = 0.45;
   const upserts = [];
 
   for (const fix of allFixtures) {
     let best = null, bestScore = THRESHOLD - 0.01;
 
     for (const ev of events) {
-      const hs = tokenSim(fix.home_team, ev.HN);
+      const hs  = tokenSim(fix.home_team, ev.HN);
       const as_ = tokenSim(fix.away_team, ev.AN);
+
+      /* Her iki takım da minimum 0.35 benzerlik sağlamalı
+         Aksi halde "Port Vale" gibi tek kelime eşleşmesi yanlış sonuç veriyor */
+      if (hs < 0.35 || as_ < 0.35) continue;
+
       const score = (hs + as_) / 2;
       if (score > bestScore) { bestScore = score; best = ev; }
     }
 
     if (best) {
-      const markets = parseMarkets(best.MA);
-      if (Object.keys(markets).length > 0) {
+      /* matchName'i parseMarkets'a geçir — MTID log için */
+      const markets = parseMarkets(best.MA, `${fix.home_team} vs ${fix.away_team}  →  ${best.HN} vs ${best.AN}`);
+
+      /* Bilinmeyen ham mtid_* keylerini logdan okuyacağız,
+         gerçek veriye kaydederken bunları filtrele */
+      const cleanMarkets = Object.fromEntries(
+        Object.entries(markets).filter(([k]) => !k.startsWith('mtid_'))
+      );
+
+      if (Object.keys(cleanMarkets).length > 0) {
         upserts.push({
           fixture_id: fix.fixture_id,
           odds_data: {
             source: 'İddaa / Nesine',
-            markets,
+            markets: cleanMarkets,
             nesine_name: `${best.HN} - ${best.AN}`,
           },
           updated_at: new Date().toISOString(),
         });
-        console.log(`  ✓ ${fix.home_team} vs ${fix.away_team}  →  ${best.HN} vs ${best.AN} (${bestScore.toFixed(2)}) [${Object.keys(markets).join(',')}]`);
+        console.log(`  ✓ ${fix.home_team} vs ${fix.away_team}  →  ${best.HN} vs ${best.AN} (${bestScore.toFixed(2)}) [${Object.keys(cleanMarkets).join(',')}]`);
       } else {
         console.log(`  ~ ${fix.home_team} vs ${fix.away_team}  →  eşleşti ama market yok`);
       }
