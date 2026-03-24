@@ -160,7 +160,7 @@ async function run() {
 
   console.log('[Odds] Supabase maçları çekiliyor...');
   const { data: fixtures, error: fErr } = await sb
-    .from('daily_matches')
+    .from('future_matches')
     .select('fixture_id, home_team, away_team, match_date')
     .gte('match_date', today)
     .lte('match_date', tomorrow)
