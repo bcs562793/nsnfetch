@@ -68,9 +68,17 @@ function tokenSim(a, b) {
    MTID=25  → Karşılıklı Gol  (N:1=var, N:2=yok)
    (MTID'ler gözlemle eşleştirildi — SOV ile çizgi belirlenir)
 ──────────────────────────────────────────── */
-function parseMarkets(maArr) {
+function parseMarkets(maArr, matchName) {
   const markets = {};
   if (!Array.isArray(maArr)) return markets;
+
+  /* ── LOG: Bu maça ait tüm MTID'leri göster ── */
+  if (matchName) {
+    console.log(`\n  [MTIDs] ${matchName}`);
+    maArr.forEach(m => {
+      console.log(`    MTID=${m.MTID} SOV=${m.SOV ?? '-'} OCA_count=${(m.OCA||[]).length} OCA_N=[${(m.OCA||[]).map(o=>o.N).join(',')}] örnek_oran=${(m.OCA||[])[0]?.O ?? '-'}`);
+    });
+  }
 
   for (const m of maArr) {
     const mtid = m.MTID;
