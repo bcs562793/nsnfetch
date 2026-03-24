@@ -159,23 +159,23 @@ async function run() {
   const tomorrow = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
 
   console.log('[Odds] Supabase maçları çekiliyor...');
-  const { data: fixtures, error: fErr } = await sb
-    .from('live_matches')
-    .select('fixture_id, home_team, away_team, match_date')
-    .gte('match_date', today)
-    .lte('match_date', tomorrow)
-    .limit(300);
+  const { data: rawFixtures, error: fErr } = await sb
+    .from('future_matches')
+    .select('fixture_id, date, data')
+    .limit(500);
 
   if (fErr) { console.error('[Odds] Supabase hata:', fErr.message); process.exit(1); }
 
-  const { data: futureFixtures } = await sb
-    .from('future_matches')
-    .select('fixture_id, home_team, away_team, match_date')
-    .gte('match_date', today)
-    .lte('match_date', tomorrow)
-    .limit(300);
-
-  const allFixtures = [...(fixtures || []), ...(futureFixtures || [])];
+  /* home_team / away_team data JSONB içinden çıkarılıyor */
+  const allFixtures = (rawFixtures || []).map(row => {
+    const d = row.data || {};
+    return {
+      fixture_id: row.fixture_id,
+      date: row.date,
+      home_team: d.teams?.home?.name || '',
+      away_team: d.teams?.away?.name || '',
+    };
+  }).filter(f => f.home_team && f.away_team);
   console.log(`[Odds] ${allFixtures.length} maç bulundu`);
 
   if (!allFixtures.length) {
