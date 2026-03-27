@@ -39,13 +39,11 @@ Future<void> main() async {
   print('   ${nList.length} futbol maçı bulundu');
 
   // 2. Supabase'den canlı maçlar
-  // FIX: NS kaldırıldı — GetLiveBetResults zaten sadece aktif maçları döndürür,
-  // NS maçlara nesine_bid yazılırsa listener henüz başlamamış maçlara skor yazar.
   print('📡 Supabase live_matches...');
   final sRes = await http.get(
     Uri.parse('$_sbUrl/rest/v1/live_matches'
         '?select=fixture_id,home_team,away_team'
-        '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE)'),
+        '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE,NS)'),
     headers: _sbHeaders(),
   ).timeout(const Duration(seconds: 15));
 
@@ -68,7 +66,6 @@ Future<void> main() async {
     for (final sb in sbList) {
       final homeSim = _sim(nHome, (sb['home_team'] ?? '').toString());
       final awaySim = _sim(nAway, (sb['away_team'] ?? '').toString());
-      // FIX: her iki taraf da en az 0.45 olmalı — sadece birinin tutması yetmez
       if (homeSim < 0.45 || awaySim < 0.45) continue;
       final s = (homeSim + awaySim) / 2;
       if (s > bestScore) { bestScore = s; best = sb; }
@@ -82,7 +79,6 @@ Future<void> main() async {
     final fid = best['fixture_id'] as int;
     print('🔗 bid=$bid ↔ fixture=$fid (${bestScore.toStringAsFixed(2)}) $nHome vs $nAway');
 
-    // Supabase'e nesine_bid yaz
     final pRes = await http.patch(
       Uri.parse('$_sbUrl/rest/v1/live_matches?fixture_id=eq.$fid'),
       headers: {..._sbHeaders(), 'Content-Type': 'application/json'},
@@ -121,9 +117,18 @@ double _sim(String a, String b) {
   return j * 0.5;
 }
 
+// ✅ FIX: Batı Avrupa aksanları eklendi
+// Eski: sadece Türkçe + é,á,ñ → ó,â,î gibi harfler [^\w\s] ile SİLİNİYORDU
+// "Córdoba" → "crdoba", "Châteauroux" → "chteauroux" → skor 0.00
 String _norm(String s) => s.toLowerCase()
     .replaceAll('ı','i').replaceAll('ğ','g').replaceAll('ü','u')
     .replaceAll('ş','s').replaceAll('ö','o').replaceAll('ç','c')
-    .replaceAll('é','e').replaceAll('á','a').replaceAll('ñ','n')
+    .replaceAll('é','e').replaceAll('è','e').replaceAll('ê','e').replaceAll('ë','e')
+    .replaceAll('á','a').replaceAll('à','a').replaceAll('â','a').replaceAll('ä','a').replaceAll('ã','a')
+    .replaceAll('ó','o').replaceAll('ò','o').replaceAll('ô','o').replaceAll('õ','o')
+    .replaceAll('ú','u').replaceAll('ù','u').replaceAll('û','u')
+    .replaceAll('í','i').replaceAll('ì','i').replaceAll('î','i')
+    .replaceAll('ñ','n').replaceAll('ø','o').replaceAll('å','a')
+    .replaceAll('ć','c').replaceAll('č','c').replaceAll('ž','z').replaceAll('š','s')
     .replaceAll(RegExp(r'[^\w\s]'), '')
     .replaceAll(RegExp(r'\s+'), ' ').trim();
