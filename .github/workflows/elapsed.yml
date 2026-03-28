@@ -1,0 +1,30 @@
+name: Elapsed Sync
+
+on:
+  schedule:
+    # Her dakika çalışır (GitHub Actions minimum 1 dakika)
+    - cron: '* * * * *'
+  workflow_dispatch: # Manuel tetikleme
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Dart
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Run elapsed sync
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: dart run bin/elapsed_sync.dart
