@@ -122,6 +122,32 @@ const TEAM_ALIASES = {
   'bragantino'                  : 'rb bragantino',
   'palmeiras'                   : 'palmeiras sp',
   'gremio'                      : 'gremio p',
+  // TEAM_ALIASES'e eklenecekler
+'baltika'                    : 'b kaliningrad',
+'velez'                      : 'v sarsfield',
+'s shenhua'                  : 'shanghai s',
+'tianjin jinmen'             : 'tianjin jin',
+'g birliği'                  : 'gençlerbirliği',
+'1 fc slovacko'              : 'slovacko',
+'jagiellonia'                : 'j bialystok',
+'ilves'                      : 'tampereen i',
+'auvergne'                   : 'le puy foot 43',
+'juventud'                   : 'ca juventud de las piedras',
+'akademisk bo'               : 'ab gladsaxe',
+'lusitania de lourosa'       : 'lusitania',
+'stade nyonnais'             : 'std nyonnis',
+'fc zurich'                  : 'zurih',
+'cordoba cf'                 : 'cordoba',
+'deportivo'                  : 'dep la coruna',
+'masr'                       : 'zed',
+'future fc'                  : 'modern sport club',
+'new york rb'                : 'ny red bulls',
+'the new saints'             : 'tns',
+'vancouver'                  : 'v whitecaps',
+'fc hradec kralove'          : 'h kralove',
+'fc midtjylland'             : 'midtjylland',
+'sønderjyske'                : 'sonderjyske',
+'pacos de ferreira'          : 'p ferreira',
 };
 
 function normWithAlias(s) {
@@ -231,7 +257,7 @@ async function run() {
   const { data: rawFixtures, error: fErr } = await sb
     .from('future_matches')
     .select('fixture_id, date, data')
-    .limit(1000);
+    .limit(1200);
 
   if (fErr) { console.error('[Odds] Supabase hata:', fErr.message); process.exit(1); }
 
