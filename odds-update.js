@@ -1,67 +1,9 @@
 /**
- * SCOREPOP — odds-update.js  (v5)
- * Nesine HTML'den tespit edilen TÜM MTID'ler:
- *
- * ── MAÇ SONUCU ──────────────────────────────
- * MTID=1   OCA=3  → Maç Sonucu 1X2
- * MTID=3   OCA=3  → Çifte Şans             ⚠️ önceden 2 diyorduk, YANLIŞ
- * MTID=268 OCA=3  → Handikaplı Maç Sonucu  (SOV=çizgi, örn -1,-2,+1)
- * MTID=5   OCA=9  → İY / Maç Sonucu
- * MTID=342 OCA=6  → MS + 1.5 Alt/Üst
- * MTID=343 OCA=6  → MS + 2.5 Alt/Üst
- * MTID=272 OCA=6  → MS + X.5 Alt/Üst       (SOV=3.5 veya 4.5)
- * MTID=414 OCA=6  → MS + Karşılıklı Gol
- * MTID=588 OCA=7  → Hangi Takım Kaç Farkla Kazanır
- *
- * ── YARI SONUCU ─────────────────────────────
- * MTID=7   OCA=3  → 1. Yarı Sonucu
- * MTID=8   OCA=3  → 1. Yarı Çifte Şans     ⚠️ önceden ht_1x2 diyorduk, YANLIŞ
- * MTID=459 OCA=6  → 1Y Sonucu + 1Y 1.5 Alt/Üst
- * MTID=416 OCA=6  → 1Y Sonucu + 1Y Karşılıklı Gol
- * MTID=9   OCA=3  → 2. Yarı Sonucu
- * MTID=591 OCA=2  → Ev Sahibi Her İki Yarıyı Kazanır
- * MTID=592 OCA=2  → Deplasman Her İki Yarıyı Kazanır
- *
- * ── YARI ALT/ÜST ────────────────────────────
- * MTID=209 OCA=2  → 1Y 0.5 Gol Alt/Üst
- * MTID=14  OCA=2  → 1Y 1.5 Gol Alt/Üst    ⚠️ önceden Maç Alt/Üst diyorduk, YANLIŞ
- * MTID=15  OCA=2  → 1Y 2.5 Gol Alt/Üst
- * MTID=528 OCA=2  → İki Yarı da 1.5 Alt
- * MTID=529 OCA=2  → İki Yarı da 1.5 Üst
- *
- * ── MAÇ SONUCU ALT/ÜST ──────────────────────
- * MTID=11  OCA=2  → 1.5 Gol Alt/Üst
- * MTID=12  OCA=2  → 2.5 Gol Alt/Üst
- * MTID=13  OCA=2  → 3.5 Gol Alt/Üst
- * MTID=155 OCA=2  → 4.5 / 5.5 Gol Alt/Üst (SOV ile ayırt)
- * MTID=446 OCA=4  → 2.5 Alt/Üst + Karşılıklı Gol
- *
- * ── GOL ─────────────────────────────────────
- * MTID=38  OCA=2  → Karşılıklı Gol          ⚠️ önceden 25/49 diyorduk
- * MTID=452 OCA=2  → 1Y Karşılıklı Gol
- * MTID=599 OCA=2  → 2Y Karşılıklı Gol
- * MTID=801 OCA=4  → 1Y/2Y Karşılıklı Gol
- * MTID=291 OCA=3  → İlk Golü Kim Atar
- * MTID=295 OCA=2  → Ev Sahibi İki Yarıda da Gol
- * MTID=296 OCA=2  → Deplasman İki Yarıda da Gol
- * MTID=586 OCA=3  → Ev Sahibi Hangi Yarıda Daha Çok Gol
- * MTID=587 OCA=3  → Deplasman Hangi Yarıda Daha Çok Gol
- *
- * ── TARAF ALT/ÜST ───────────────────────────
- * MTID=212 OCA=2  → Ev Sahibi 0.5 Alt/Üst
- * MTID=20  OCA=2  → Ev Sahibi 1.5 Alt/Üst
- * MTID=326 OCA=2  → Ev Sahibi 2.5 Alt/Üst
- * MTID=256 OCA=2  → Deplasman 0.5 Alt/Üst
- * MTID=29  OCA=2  → Deplasman 1.5 Alt/Üst
- * MTID=328 OCA=2  → Deplasman 2.5 Alt/Üst
- * MTID=455 OCA=2  → Ev Sahibi 1Y 0.5 Alt/Üst
- * MTID=457 OCA=2  → Deplasman 1Y 0.5 Alt/Üst
- *
- * ── TOPLAM GOL ──────────────────────────────
- * MTID=43  OCA=4  → Toplam Gol Aralığı
- * MTID=48  OCA=3  → En Çok Gol Olacak Yarı
- * MTID=49  OCA=2  → Tek/Çift                ⚠️ önceden KG diyorduk, YANLIŞ
- * MTID=450 OCA=2  → 1Y Tek/Çift
+ * SCOREPOP — odds-update.js  (v6)
+ * Değişiklikler v5 → v6:
+ *   1. Per-takım min eşiği 0.35 → 0.25, genel THRESHOLD 0.45 → 0.40
+ *   2. Eşleşme bulunamazsa home/away ters kontrol
+ *   3. TEAM_ALIASES ile özel isim düzeltmeleri
  */
 'use strict';
 
@@ -97,7 +39,7 @@ function fetchJSON(url) {
   });
 }
 
-/* ── Normalize + token benzerliği ──────────── */
+/* ── Normalize ──────────────────────────────── */
 function norm(s) {
   return (s || '')
     .toLowerCase()
@@ -107,6 +49,87 @@ function norm(s) {
     .replace(/\s+/g,' ').trim();
 }
 
+/* ── Alias tablosu (norm(DB ismi) → Nesine ismi) ─── */
+const TEAM_ALIASES = {
+  // MLS
+  'seattle s'                   : 'seattle sounders',
+  'st louis'                    : 's louis city',
+  // Kosta Rika
+  's san jose'                  : 'deportivo saprissa',
+  'cs cartagines'               : 'cartagines',
+  // Azerbaycan
+  'gabala'                      : 'kabala',
+  // Yunanistan
+  'panaitolikos'                : 'paneitolikos',
+  'panserraikos'                : 'panseraikos',
+  // Avusturya 2. lig
+  'rz pellets wac'              : 'wolfsberger',
+  'tsv egger glas hartberg'     : 'hartberg',
+  'fc red bull salzburg'        : 'salzburg',
+  'ksv 1919'                    : 'kapfenberger sv',
+  'sk rapid ii'                 : 'r wien amt',
+  'sw bregenz'                  : 'schwarz weiss b',
+  'sk austria klagenfurt'       : 'klagenfurt',
+  'skn st polten'               : 'st polten',
+  'skn st pölten'               : 'st polten',
+  'fc hertha wels'              : 'wsc hertha',
+  // Faroe
+  'b68 toftir'                  : 'tofta itrottarfelag b68',
+  // Arjantin
+  'ca ferrocarril midland'      : 'f midland',
+  'gimnasia y esgrima de men'   : 'gimnasia y',
+  'estudiantes rio cuarto'      : 'e rio cuarto',
+  // Kolombiya
+  'ind medellin'                : 'ind medellin',
+  'america de cali'             : 'america cali',
+  // Sırbistan
+  'napredak'                    : 'fk napredak kru',
+  'tsc backa to'                : 'tsc backa t',
+  // Rusya
+  'd makhachkala'               : 'dyn makhachkala',
+  // Belçika
+  'rfc liege'                   : 'rfc liege',
+  'raal la louviere'            : 'raal la louviere',
+  'racing genk b'               : 'j krc genk u23',
+  // İrlanda Kuzey
+  'h w welders'                 : 'harland wolff w',
+  // Avustralya (K)
+  'adelaide united fc k'        : 'adelaide utd k',
+  'canberra utd k'              : 'canberra utd k',
+  'brisbane roar fc k'          : 'brisbane r k',
+  // Kazakistan
+  'kyzylzhar'                   : 'kyzyl zhar sk',
+  // Gürcistan
+  'd batumi'                    : 'dinamo b',
+  // İspanya
+  'algeciras cf'                : 'algeciras',
+  'ibiza'                       : 'i eivissa',
+  // İtalya
+  'gubbio'                      : 'as gubbio 1910',
+  'pineto'                      : 'asd pineto calcio',
+  'mont tuscia'                 : 'monterosi t',
+  'ssd casarano calcio'         : 'casarano',
+  'palermo'                     : 'us palermo',
+  'avellino'                    : 'as avellino 1912',
+  // İngiltere
+  'utdofmanch'                  : 'utd of manch',
+  // Almanya
+  'sg sonnenhof grossaspach'    : 'grossaspach',
+  // Çin
+  'chengdu'                     : 'chengdu ron',
+  'qingdao y i'                 : 'qingdao yth is',
+  // Brezilya
+  'bragantino'                  : 'rb bragantino',
+  'palmeiras'                   : 'palmeiras sp',
+  'gremio'                      : 'gremio p',
+};
+
+function normWithAlias(s) {
+  const n = norm(s);
+  return TEAM_ALIASES[n] || n;
+}
+
+/* ── Token benzerliği ───────────────────────── */
 function tokenSim(a, b) {
   const ta = new Set(norm(a).split(' ').filter(x => x.length > 1));
   const tb = new Set(norm(b).split(' ').filter(x => x.length > 1));
@@ -121,8 +144,14 @@ function tokenSim(a, b) {
   return hit / Math.max(ta.size, tb.size);
 }
 
+function matchScore(homeDB, awayDB, ev) {
+  const hs  = tokenSim(normWithAlias(homeDB), norm(ev.HN));
+  const as_ = tokenSim(normWithAlias(awayDB), norm(ev.AN));
+  return { hs, as_, avg: (hs + as_) / 2 };
+}
+
 /* ── Market parse ───────────────────────────── */
-function parseMarkets(maArr, matchName) {
+function parseMarkets(maArr) {
   const markets = {};
   if (!Array.isArray(maArr)) return markets;
 
@@ -132,206 +161,65 @@ function parseMarkets(maArr, matchName) {
     const oca  = m.OCA || [];
     const get  = (n) => { const o = oca.find(x => x.N === n); return o ? +o.O : 0; };
 
-    /* ── MAÇ SONUCU ─────────────────────────── */
-    if (mtid === 1 && oca.length === 3) {
-      markets['1x2'] = { home: get(1), draw: get(2), away: get(3) };
-    }
-    if (mtid === 3 && oca.length === 3) {
-      markets['dc'] = { '1x': get(1), '12': get(2), 'x2': get(3) };
-    }
+    if (mtid === 1   && oca.length === 3) { markets['1x2']        = { home: get(1), draw: get(2), away: get(3) }; }
+    if (mtid === 3   && oca.length === 3) { markets['dc']         = { '1x': get(1), '12': get(2), 'x2': get(3) }; }
     if (mtid === 268 && oca.length === 3) {
-      const sign = sov >= 0
-        ? `p${String(sov).replace('.','_')}`
-        : `m${String(Math.abs(sov)).replace('.','_')}`;
+      const sign = sov >= 0 ? `p${String(sov).replace('.','_')}` : `m${String(Math.abs(sov)).replace('.','_')}`;
       markets[`ah_${sign}`] = { home: get(1), draw: get(2), away: get(3), line: sov };
     }
-    if (mtid === 5 && oca.length === 9) {
-      markets['ht_ft'] = {
-        '1/1': get(1), '1/X': get(2), '1/2': get(3),
-        'X/1': get(4), 'X/X': get(5), 'X/2': get(6),
-        '2/1': get(7), '2/X': get(8), '2/2': get(9),
-      };
+    if (mtid === 5   && oca.length === 9) {
+      markets['ht_ft'] = { '1/1': get(1), '1/X': get(2), '1/2': get(3), 'X/1': get(4), 'X/X': get(5), 'X/2': get(6), '2/1': get(7), '2/X': get(8), '2/2': get(9) };
     }
-    if (mtid === 342 && oca.length === 6) {
-      markets['ms_ou15'] = {
-        'h_u': get(1), 'x_u': get(2), 'a_u': get(3),
-        'h_o': get(4), 'x_o': get(5), 'a_o': get(6),
-      };
-    }
-    if (mtid === 343 && oca.length === 6) {
-      markets['ms_ou25'] = {
-        'h_u': get(1), 'x_u': get(2), 'a_u': get(3),
-        'h_o': get(4), 'x_o': get(5), 'a_o': get(6),
-      };
-    }
+    if (mtid === 342 && oca.length === 6) { markets['ms_ou15'] = { 'h_u': get(1), 'x_u': get(2), 'a_u': get(3), 'h_o': get(4), 'x_o': get(5), 'a_o': get(6) }; }
+    if (mtid === 343 && oca.length === 6) { markets['ms_ou25'] = { 'h_u': get(1), 'x_u': get(2), 'a_u': get(3), 'h_o': get(4), 'x_o': get(5), 'a_o': get(6) }; }
     if (mtid === 272 && oca.length === 6) {
-      const key = Math.abs(sov - 3.5) < 0.01 ? 'ms_ou35'
-                : Math.abs(sov - 4.5) < 0.01 ? 'ms_ou45'
-                : `ms_ou_${String(sov).replace('.','_')}`;
-      markets[key] = {
-        'h_u': get(1), 'x_u': get(2), 'a_u': get(3),
-        'h_o': get(4), 'x_o': get(5), 'a_o': get(6),
-      };
+      const key = Math.abs(sov - 3.5) < 0.01 ? 'ms_ou35' : Math.abs(sov - 4.5) < 0.01 ? 'ms_ou45' : `ms_ou_${String(sov).replace('.','_')}`;
+      markets[key] = { 'h_u': get(1), 'x_u': get(2), 'a_u': get(3), 'h_o': get(4), 'x_o': get(5), 'a_o': get(6) };
     }
-    if (mtid === 414 && oca.length === 6) {
-      markets['ms_kg'] = {
-        'h_y': get(1), 'x_y': get(3), 'a_y': get(5),
-        'h_n': get(2), 'x_n': get(4), 'a_n': get(6),
-      };
-    }
-    if (mtid === 588 && oca.length >= 6) {
-      markets['win_margin'] = {
-        'h3p': get(1), 'h2': get(2), 'h1': get(3),
-        'a1':  get(4), 'a2': get(5), 'a3p': get(6),
-        'draw': get(7),
-      };
-    }
-
-    /* ── YARI SONUCU ────────────────────────── */
-    if (mtid === 7 && oca.length === 3) {
-      markets['ht_1x2'] = { home: get(1), draw: get(2), away: get(3) };
-    }
-    if (mtid === 8 && oca.length === 3) {
-      markets['ht_dc'] = { '1x': get(1), '12': get(2), 'x2': get(3) };
-    }
-    if (mtid === 459 && oca.length === 6) {
-      markets['ht_ms_ou15'] = {
-        'h_u': get(1), 'x_u': get(2), 'a_u': get(3),
-        'h_o': get(4), 'x_o': get(5), 'a_o': get(6),
-      };
-    }
-    if (mtid === 416 && oca.length === 6) {
-      markets['ht_ms_kg'] = {
-        'h_y': get(1), 'x_y': get(3), 'a_y': get(5),
-        'h_n': get(2), 'x_n': get(4), 'a_n': get(6),
-      };
-    }
-    if (mtid === 9 && oca.length === 3) {
-      markets['2h_1x2'] = { home: get(1), draw: get(2), away: get(3) };
-    }
-    if (mtid === 591 && oca.length >= 1) {
-      markets['home_win_both'] = { yes: get(1), no: get(2) };
-    }
-    if (mtid === 592 && oca.length >= 1) {
-      markets['away_win_both'] = { yes: get(1), no: get(2) };
-    }
-
-    /* ── YARI ALT/ÜST ───────────────────────── */
-    if (mtid === 209 && oca.length === 2) {
-      markets['ht_ou05'] = { under: get(1), over: get(2) };
-    }
-    if (mtid === 14 && oca.length === 2) {
-      markets['ht_ou15'] = { under: get(1), over: get(2) };
-    }
-    if (mtid === 15 && oca.length === 2) {
-      markets['ht_ou25'] = { under: get(1), over: get(2) };
-    }
-    if (mtid === 528 && oca.length === 2) {
-      markets['both_half_u15'] = { yes: get(1), no: get(2) };
-    }
-    if (mtid === 529 && oca.length === 2) {
-      markets['both_half_o15'] = { yes: get(1), no: get(2) };
-    }
-
-    /* ── MAÇ SONUCU ALT/ÜST ─────────────────── */
-    if (mtid === 11 && oca.length === 2) {
-      markets['ou15'] = { under: get(1), over: get(2) };
-    }
-    if (mtid === 12 && oca.length === 2) {
-      markets['ou25'] = { under: get(1), over: get(2) };
-    }
-    if (mtid === 13 && oca.length === 2) {
-      markets['ou35'] = { under: get(1), over: get(2) };
-    }
+    if (mtid === 414 && oca.length === 6) { markets['ms_kg']      = { 'h_y': get(1), 'x_y': get(3), 'a_y': get(5), 'h_n': get(2), 'x_n': get(4), 'a_n': get(6) }; }
+    if (mtid === 588 && oca.length >= 6)  { markets['win_margin'] = { 'h3p': get(1), 'h2': get(2), 'h1': get(3), 'a1': get(4), 'a2': get(5), 'a3p': get(6), 'draw': get(7) }; }
+    if (mtid === 7   && oca.length === 3) { markets['ht_1x2']     = { home: get(1), draw: get(2), away: get(3) }; }
+    if (mtid === 8   && oca.length === 3) { markets['ht_dc']      = { '1x': get(1), '12': get(2), 'x2': get(3) }; }
+    if (mtid === 459 && oca.length === 6) { markets['ht_ms_ou15'] = { 'h_u': get(1), 'x_u': get(2), 'a_u': get(3), 'h_o': get(4), 'x_o': get(5), 'a_o': get(6) }; }
+    if (mtid === 416 && oca.length === 6) { markets['ht_ms_kg']   = { 'h_y': get(1), 'x_y': get(3), 'a_y': get(5), 'h_n': get(2), 'x_n': get(4), 'a_n': get(6) }; }
+    if (mtid === 9   && oca.length === 3) { markets['2h_1x2']     = { home: get(1), draw: get(2), away: get(3) }; }
+    if (mtid === 591 && oca.length >= 1)  { markets['home_win_both'] = { yes: get(1), no: get(2) }; }
+    if (mtid === 592 && oca.length >= 1)  { markets['away_win_both'] = { yes: get(1), no: get(2) }; }
+    if (mtid === 209 && oca.length === 2) { markets['ht_ou05']       = { under: get(1), over: get(2) }; }
+    if (mtid === 14  && oca.length === 2) { markets['ht_ou15']       = { under: get(1), over: get(2) }; }
+    if (mtid === 15  && oca.length === 2) { markets['ht_ou25']       = { under: get(1), over: get(2) }; }
+    if (mtid === 528 && oca.length === 2) { markets['both_half_u15'] = { yes: get(1), no: get(2) }; }
+    if (mtid === 529 && oca.length === 2) { markets['both_half_o15'] = { yes: get(1), no: get(2) }; }
+    if (mtid === 11  && oca.length === 2) { markets['ou15']          = { under: get(1), over: get(2) }; }
+    if (mtid === 12  && oca.length === 2) { markets['ou25']          = { under: get(1), over: get(2) }; }
+    if (mtid === 13  && oca.length === 2) { markets['ou35']          = { under: get(1), over: get(2) }; }
     if (mtid === 155 && oca.length === 2) {
-      if (Math.abs(sov - 4.5) < 0.01) {
-        markets['ou45'] = { under: get(1), over: get(2) };
-      } else if (Math.abs(sov - 5.5) < 0.01) {
-        markets['ou55'] = { under: get(1), over: get(2) };
-      } else {
-        markets[`ou_${String(sov).replace('.','_')}`] = { under: get(1), over: get(2), line: sov };
-      }
+      if      (Math.abs(sov - 4.5) < 0.01) { markets['ou45'] = { under: get(1), over: get(2) }; }
+      else if (Math.abs(sov - 5.5) < 0.01) { markets['ou55'] = { under: get(1), over: get(2) }; }
+      else { markets[`ou_${String(sov).replace('.','_')}`] = { under: get(1), over: get(2), line: sov }; }
     }
-    if (mtid === 446 && oca.length === 4) {
-      markets['ou25_kg'] = {
-        'u_y': get(1), 'o_y': get(2),
-        'u_n': get(3), 'o_n': get(4),
-      };
-    }
-
-    /* ── GOL ────────────────────────────────── */
-    if (mtid === 38 && oca.length === 2) {
-      markets['btts'] = { yes: get(1), no: get(2) };
-    }
-    if (mtid === 452 && oca.length === 2) {
-      markets['ht_btts'] = { yes: get(1), no: get(2) };
-    }
-    if (mtid === 599 && oca.length === 2) {
-      markets['2h_btts'] = { yes: get(1), no: get(2) };
-    }
-    if (mtid === 801 && oca.length === 4) {
-      markets['halves_btts'] = {
-        'yy': get(3), 'yn': get(2),
-        'ny': get(4), 'nn': get(1),
-      };
-    }
-    if (mtid === 291 && oca.length === 3) {
-      markets['first_goal'] = { home: get(1), none: get(2), away: get(3) };
-    }
-    if (mtid === 295 && oca.length >= 1) {
-      markets['home_score_both'] = { yes: get(1), no: get(2) };
-    }
-    if (mtid === 296 && oca.length >= 1) {
-      markets['away_score_both'] = { yes: get(1), no: get(2) };
-    }
-    if (mtid === 586 && oca.length === 3) {
-      markets['home_more_goals_half'] = { first: get(1), equal: get(2), second: get(3) };
-    }
-    if (mtid === 587 && oca.length === 3) {
-      markets['away_more_goals_half'] = { first: get(1), equal: get(2), second: get(3) };
-    }
-
-    /* ── TARAF ALT/ÜST ──────────────────────── */
-    if (mtid === 212 && oca.length === 2) {
-      markets['h_ou05'] = { under: get(1), over: get(2) };
-    }
-    if (mtid === 20 && oca.length === 2) {
-      markets['h_ou15'] = { under: get(1), over: get(2) };
-    }
-    if (mtid === 326 && oca.length === 2) {
-      markets['h_ou25'] = { under: get(1), over: get(2) };
-    }
-    if (mtid === 256 && oca.length === 2) {
-      markets['a_ou05'] = { under: get(1), over: get(2) };
-    }
-    if (mtid === 29 && oca.length === 2) {
-      markets['a_ou15'] = { under: get(1), over: get(2) };
-    }
-    if (mtid === 328 && oca.length === 2) {
-      markets['a_ou25'] = { under: get(1), over: get(2) };
-    }
-    if (mtid === 455 && oca.length === 2) {
-      markets['h_ht_ou05'] = { under: get(1), over: get(2) };
-    }
-    if (mtid === 457 && oca.length === 2) {
-      markets['a_ht_ou05'] = { under: get(1), over: get(2) };
-    }
-
-    /* ── TOPLAM GOL ─────────────────────────── */
-    if (mtid === 43 && oca.length === 4) {
-      markets['goal_range'] = {
-        '0_1': get(1), '2_3': get(2), '4_5': get(3), '6p': get(4),
-      };
-    }
-    if (mtid === 48 && oca.length === 3) {
-      markets['more_goals_half'] = { first: get(1), equal: get(2), second: get(3) };
-    }
-    if (mtid === 49 && oca.length === 2) {
-      markets['odd_even'] = { odd: get(1), even: get(2) };
-    }
-    if (mtid === 450 && oca.length === 2) {
-      markets['ht_odd_even'] = { odd: get(1), even: get(2) };
-    }
+    if (mtid === 446 && oca.length === 4) { markets['ou25_kg']           = { 'u_y': get(1), 'o_y': get(2), 'u_n': get(3), 'o_n': get(4) }; }
+    if (mtid === 38  && oca.length === 2) { markets['btts']              = { yes: get(1), no: get(2) }; }
+    if (mtid === 452 && oca.length === 2) { markets['ht_btts']           = { yes: get(1), no: get(2) }; }
+    if (mtid === 599 && oca.length === 2) { markets['2h_btts']           = { yes: get(1), no: get(2) }; }
+    if (mtid === 801 && oca.length === 4) { markets['halves_btts']       = { 'yy': get(3), 'yn': get(2), 'ny': get(4), 'nn': get(1) }; }
+    if (mtid === 291 && oca.length === 3) { markets['first_goal']        = { home: get(1), none: get(2), away: get(3) }; }
+    if (mtid === 295 && oca.length >= 1)  { markets['home_score_both']   = { yes: get(1), no: get(2) }; }
+    if (mtid === 296 && oca.length >= 1)  { markets['away_score_both']   = { yes: get(1), no: get(2) }; }
+    if (mtid === 586 && oca.length === 3) { markets['home_more_goals_half'] = { first: get(1), equal: get(2), second: get(3) }; }
+    if (mtid === 587 && oca.length === 3) { markets['away_more_goals_half'] = { first: get(1), equal: get(2), second: get(3) }; }
+    if (mtid === 212 && oca.length === 2) { markets['h_ou05']    = { under: get(1), over: get(2) }; }
+    if (mtid === 20  && oca.length === 2) { markets['h_ou15']    = { under: get(1), over: get(2) }; }
+    if (mtid === 326 && oca.length === 2) { markets['h_ou25']    = { under: get(1), over: get(2) }; }
+    if (mtid === 256 && oca.length === 2) { markets['a_ou05']    = { under: get(1), over: get(2) }; }
+    if (mtid === 29  && oca.length === 2) { markets['a_ou15']    = { under: get(1), over: get(2) }; }
+    if (mtid === 328 && oca.length === 2) { markets['a_ou25']    = { under: get(1), over: get(2) }; }
+    if (mtid === 455 && oca.length === 2) { markets['h_ht_ou05'] = { under: get(1), over: get(2) }; }
+    if (mtid === 457 && oca.length === 2) { markets['a_ht_ou05'] = { under: get(1), over: get(2) }; }
+    if (mtid === 43  && oca.length === 4) { markets['goal_range']    = { '0_1': get(1), '2_3': get(2), '4_5': get(3), '6p': get(4) }; }
+    if (mtid === 48  && oca.length === 3) { markets['more_goals_half'] = { first: get(1), equal: get(2), second: get(3) }; }
+    if (mtid === 49  && oca.length === 2) { markets['odd_even']      = { odd: get(1), even: get(2) }; }
+    if (mtid === 450 && oca.length === 2) { markets['ht_odd_even']   = { odd: get(1), even: get(2) }; }
   }
 
   return markets;
@@ -339,7 +227,6 @@ function parseMarkets(maArr, matchName) {
 
 /* ── Ana ────────────────────────────────────── */
 async function run() {
-  /* 1. Supabase'den future_matches çek */
   console.log('[Odds] Supabase maçları çekiliyor...');
   const { data: rawFixtures, error: fErr } = await sb
     .from('future_matches')
@@ -361,44 +248,51 @@ async function run() {
   console.log(`[Odds] ${allFixtures.length} maç bulundu`);
   if (!allFixtures.length) { console.log('[Odds] Maç yok.'); return; }
 
-  /* 2. Nesine bülten indir */
   console.log('[Odds] Nesine bülten indiriliyor...');
   let nesineData;
   try { nesineData = await fetchJSON('https://cdnbulten.nesine.com/api/bulten/getprebultenfull'); }
   catch (e) { console.error('[Odds] Nesine CDN hatası:', e.message); process.exit(1); }
 
-  /* 3. Sadece futbol (TYPE=1) etkinliklerini al */
   const events = (nesineData?.sg?.EA || []).filter(e => e.TYPE === 1);
   console.log(`[Odds] Nesine'de ${events.length} futbol etkinliği`);
 
-  /* 4. Eşleştir */
-  const THRESHOLD = 0.45;
-  const upserts   = [];
+  const THRESHOLD    = 0.40;  // v5: 0.45
+  const MIN_PER_TEAM = 0.25;  // v5: 0.35
 
-  // Debug için eşleşmeyen maçları topla
+  const upserts     = [];
   const debugMissed = [];
 
   for (const fix of allFixtures) {
     let best = null, bestScore = THRESHOLD - 0.01;
+    let bestSwapped = false;
 
-    // Her maç için tüm adayların skorunu hesapla (debug için)
-    const allCandidates = events.map(ev => ({
-      hn:    ev.HN,
-      an:    ev.AN,
-      hs:    tokenSim(fix.home_team, ev.HN),
-      as_:   tokenSim(fix.away_team, ev.AN),
-    }));
+    const allCandidates = events.map(ev => {
+      const normal  = matchScore(fix.home_team, fix.away_team, ev);
+      const swapped = matchScore(fix.away_team, fix.home_team, ev);
+      const useSwap = swapped.avg > normal.avg;
+      return {
+        hn: ev.HN, an: ev.AN,
+        hs:      useSwap ? swapped.hs  : normal.hs,
+        as_:     useSwap ? swapped.as_ : normal.as_,
+        avg:     useSwap ? swapped.avg : normal.avg,
+        swapped: useSwap,
+        _ev: ev,
+      };
+    });
 
     for (const c of allCandidates) {
-      if (c.hs < 0.35 || c.as_ < 0.35) continue;
-      const score = (c.hs + c.as_) / 2;
-      if (score > bestScore) { bestScore = score; best = events.find(e => e.HN === c.hn && e.AN === c.an); }
+      if (c.hs < MIN_PER_TEAM || c.as_ < MIN_PER_TEAM) continue;
+      if (c.avg > bestScore) {
+        bestScore   = c.avg;
+        best        = c._ev;
+        bestSwapped = c.swapped;
+      }
     }
 
     if (best) {
-      const markets = parseMarkets(best.MA, null); // MTID logunu kaldırdık, sadece debug'da gösteriyoruz
-
+      const markets = parseMarkets(best.MA);
       if (Object.keys(markets).length > 0) {
+        const swapLabel = bestSwapped ? ' [TERS]' : '';
         upserts.push({
           fixture_id: fix.fixture_id,
           odds_data: {
@@ -408,40 +302,36 @@ async function run() {
           },
           updated_at: new Date().toISOString(),
         });
-        console.log(`  ✓ ${fix.home_team} vs ${fix.away_team}  →  ${best.HN} vs ${best.AN} (${bestScore.toFixed(2)}) [${Object.keys(markets).join(',')}]`);
+        console.log(`  ✓ ${fix.home_team} vs ${fix.away_team}  →  ${best.HN} vs ${best.AN} (${bestScore.toFixed(2)})${swapLabel} [${Object.keys(markets).join(',')}]`);
       } else {
         console.log(`  ~ ${fix.home_team} vs ${fix.away_team}  →  eşleşti ama market yok`);
       }
     } else {
       console.log(`  ✗ ${fix.home_team} vs ${fix.away_team}  →  eşleşme bulunamadı`);
-
-      // En yakın 3 adayı bul (eşik altında olanlar dahil)
       const top3 = allCandidates
         .filter(c => c.hs > 0.15 || c.as_ > 0.15)
-        .sort((a, b) => (b.hs + b.as_) - (a.hs + a.as_))
+        .sort((a, b) => b.avg - a.avg)
         .slice(0, 3);
-
       debugMissed.push({ fix, top3 });
     }
   }
 
-  if (!upserts.length) { console.log('[Odds] Upsert edilecek veri yok.'); }
-  else {
-    /* 5. Supabase upsert */
+  if (!upserts.length) {
+    console.log('[Odds] Upsert edilecek veri yok.');
+  } else {
     console.log(`\n[Odds] ${upserts.length} kayıt yazılıyor...`);
     const { error: upErr } = await sb
       .from('match_odds')
       .upsert(upserts, { onConflict: 'fixture_id' });
-
     if (upErr) { console.error('[Odds] Upsert hatası:', upErr.message); process.exit(1); }
     console.log(`[Odds] ✅ ${upserts.length} maç oranı güncellendi.`);
   }
 
   /* ═══════════════════════════════════════════
-   * DEBUG — EŞLEŞMEYENLERİN RAPORU (en altta)
+   * DEBUG — EN ALTTA
    * ═══════════════════════════════════════════ */
   if (debugMissed.length === 0) {
-    console.log('\n[DEBUG] ✅ Tüm maçlar eşleşti, kaçan yok.');
+    console.log('\n[DEBUG] ✅ Tüm maçlar eşleşti.');
     return;
   }
 
@@ -452,24 +342,23 @@ async function run() {
   for (const { fix, top3 } of debugMissed) {
     console.log(`\n❌  fixture_id=${fix.fixture_id}  tarih=${fix.date ?? '-'}`);
     console.log(`    DB  : "${fix.home_team}"  vs  "${fix.away_team}"`);
-
     if (top3.length === 0) {
-      console.log('    → Nesine\'de hiç benzer takım bulunamadı (0.15 altı)');
+      console.log('    → Nesine\'de hiç benzer takım yok');
     } else {
-      console.log('    En yakın Nesine adayları:');
+      console.log('    En yakın adaylar:');
       for (const c of top3) {
-        const avg = ((c.hs + c.as_) / 2).toFixed(2);
-        const bar = avg >= 0.40 ? '⚠️ EŞIĞE YAKIN' : '';
-        console.log(`      ${avg}  "${c.hn}" vs "${c.an}"  (ev=${c.hs.toFixed(2)} dep=${c.as_.toFixed(2)}) ${bar}`);
+        const near = c.avg >= 0.35 ? '⚠️ ALIAS ekle' : '';
+        const swap = c.swapped ? ' [ters]' : '';
+        console.log(`      ${c.avg.toFixed(2)}  "${c.hn}" vs "${c.an}"  (ev=${c.hs.toFixed(2)} dep=${c.as_.toFixed(2)})${swap} ${near}`);
       }
     }
   }
 
   console.log('\n' + '─'.repeat(60));
   console.log('[DEBUG] İpuçları:');
-  console.log('  • avg >= 0.40 ama eşleşmiyorsa → THRESHOLD\'u 0.40\'a düşür');
-  console.log('  • Nesine adayı çok farklıysa   → TEAM_ALIASES tablosu ekle');
-  console.log('  • Aday hiç yoksa               → takım ismi tamamen farklı');
+  console.log('  • ⚠️ ALIAS ekle  → TEAM_ALIASES objesine ekle');
+  console.log('  • [ters]         → DB\'de home/away yanlış');
+  console.log('  • Aday yok       → Nesine\'de bu maç yok');
   console.log('─'.repeat(60) + '\n');
 }
 
