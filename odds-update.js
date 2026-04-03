@@ -231,7 +231,7 @@ async function run() {
   const { data: rawFixtures, error: fErr } = await sb
     .from('future_matches')
     .select('fixture_id, date, data')
-    .limit(500);
+    .limit(1000);
 
   if (fErr) { console.error('[Odds] Supabase hata:', fErr.message); process.exit(1); }
 
