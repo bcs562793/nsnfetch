@@ -367,6 +367,17 @@ async function run() {
           updated_at: new Date().toISOString(),
         });
         console.log(`  ✓ ${fix.home_team} vs ${fix.away_team}  →  ${best.HN} vs ${best.AN} (${bestScore.toFixed(2)})${swapLabel} [${Object.keys(markets).join(',')}]`);
+      // Trend sayımı yapalım (Ekranda göstermek için)
+        let upCount = 0, downCount = 0;
+        for (const mKey in markets_change) {
+          for (const oKey in markets_change[mKey]) {
+            if (markets_change[mKey][oKey] === 1) upCount++;
+            if (markets_change[mKey][oKey] === -1) downCount++;
+          }
+        }
+        const trendMsg = (upCount > 0 || downCount > 0) ? ` | Trend: ${upCount}↑ ${downCount}↓` : '';
+
+        console.log(`  ✓ ${fix.home_team} vs ${fix.away_team}  →  ${best.HN} vs ${best.AN} (${bestScore.toFixed(2)})${swapLabel} [${Object.keys(markets).length} market]${trendMsg}`);
       } else {
         console.log(`  ~ ${fix.home_team} vs ${fix.away_team}  →  eşleşti ama market yok`);
       }
