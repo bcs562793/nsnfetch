@@ -1,9 +1,11 @@
 /**
- * SCOREPOP — odds-update.js  (v6)
+ * SCOREPOP — odds-update.js  (v7 - Trend Eklentisi)
  * Değişiklikler v5 → v6:
- *   1. Per-takım min eşiği 0.35 → 0.25, genel THRESHOLD 0.45 → 0.40
- *   2. Eşleşme bulunamazsa home/away ters kontrol
- *   3. TEAM_ALIASES ile özel isim düzeltmeleri
+ * 1. Per-takım min eşiği 0.35 → 0.25, genel THRESHOLD 0.45 → 0.40
+ * 2. Eşleşme bulunamazsa home/away ters kontrol
+ * 3. TEAM_ALIASES ile özel isim düzeltmeleri
+ * v6 -> v7 (Yeni):
+ * 4. markets_change objesi eklendi (oran düşüş/yükseliş takibi)
  */
 'use strict';
 
@@ -123,31 +125,31 @@ const TEAM_ALIASES = {
   'palmeiras'                   : 'palmeiras sp',
   'gremio'                      : 'gremio p',
   // TEAM_ALIASES'e eklenecekler
-'baltika'                    : 'b kaliningrad',
-'velez'                      : 'v sarsfield',
-'s shenhua'                  : 'shanghai s',
-'tianjin jinmen'             : 'tianjin jin',
-'g birliği'                  : 'gençlerbirliği',
-'1 fc slovacko'              : 'slovacko',
-'jagiellonia'                : 'j bialystok',
-'ilves'                      : 'tampereen i',
-'auvergne'                   : 'le puy foot 43',
-'juventud'                   : 'ca juventud de las piedras',
-'akademisk bo'               : 'ab gladsaxe',
-'lusitania de lourosa'       : 'lusitania',
-'stade nyonnais'             : 'std nyonnis',
-'fc zurich'                  : 'zurih',
-'cordoba cf'                 : 'cordoba',
-'deportivo'                  : 'dep la coruna',
-'masr'                       : 'zed',
-'future fc'                  : 'modern sport club',
-'new york rb'                : 'ny red bulls',
-'the new saints'             : 'tns',
-'vancouver'                  : 'v whitecaps',
-'fc hradec kralove'          : 'h kralove',
-'fc midtjylland'             : 'midtjylland',
-'sønderjyske'                : 'sonderjyske',
-'pacos de ferreira'          : 'p ferreira',
+  'baltika'                    : 'b kaliningrad',
+  'velez'                      : 'v sarsfield',
+  's shenhua'                  : 'shanghai s',
+  'tianjin jinmen'             : 'tianjin jin',
+  'g birliği'                  : 'gençlerbirliği',
+  '1 fc slovacko'              : 'slovacko',
+  'jagiellonia'                : 'j bialystok',
+  'ilves'                      : 'tampereen i',
+  'auvergne'                   : 'le puy foot 43',
+  'juventud'                   : 'ca juventud de las piedras',
+  'akademisk bo'               : 'ab gladsaxe',
+  'lusitania de lourosa'       : 'lusitania',
+  'stade nyonnais'             : 'std nyonnis',
+  'fc zurich'                  : 'zurih',
+  'cordoba cf'                 : 'cordoba',
+  'deportivo'                  : 'dep la coruna',
+  'masr'                       : 'zed',
+  'future fc'                  : 'modern sport club',
+  'new york rb'                : 'ny red bulls',
+  'the new saints'             : 'tns',
+  'vancouver'                  : 'v whitecaps',
+  'fc hradec kralove'          : 'h kralove',
+  'fc midtjylland'             : 'midtjylland',
+  'sønderjyske'                : 'sonderjyske',
+  'pacos de ferreira'          : 'p ferreira',
 };
 
 function normWithAlias(s) {
@@ -274,6 +276,18 @@ async function run() {
   console.log(`[Odds] ${allFixtures.length} maç bulundu`);
   if (!allFixtures.length) { console.log('[Odds] Maç yok.'); return; }
 
+  // YENİ EKLEME (V7) 1. KISIM: Veritabanındaki eski oranları (trend için) çekiyoruz
+  console.log('[Odds] Eski oranlar çekiliyor (Trend analizi için)...');
+  const { data: existingDbOdds } = await sb
+    .from('match_odds')
+    .select('fixture_id, odds_data')
+    .in('fixture_id', allFixtures.map(f => f.fixture_id));
+  
+  const oldOddsMap = {};
+  (existingDbOdds || []).forEach(row => {
+    oldOddsMap[row.fixture_id] = row.odds_data || {};
+  });
+
   console.log('[Odds] Nesine bülten indiriliyor...');
   let nesineData;
   try { nesineData = await fetchJSON('https://cdnbulten.nesine.com/api/bulten/getprebultenfull'); }
@@ -319,11 +333,35 @@ async function run() {
       const markets = parseMarkets(best.MA);
       if (Object.keys(markets).length > 0) {
         const swapLabel = bestSwapped ? ' [TERS]' : '';
+
+        // YENİ EKLEME (V7) 2. KISIM: Eski oranlarla karşılaştırıp değişimi hesaplıyoruz
+        const oldData = oldOddsMap[fix.fixture_id] || {};
+        const oldMarkets = oldData.markets || {};
+        const oldChanges = oldData.markets_change || {};
+        const markets_change = {};
+
+        for (const mKey of Object.keys(markets)) {
+          markets_change[mKey] = {};
+          for (const oKey of Object.keys(markets[mKey])) {
+            if (oKey === 'line') continue; // line değişimi trend hesaplamaz
+
+            const newVal = markets[mKey][oKey];
+            const oldVal = oldMarkets[mKey]?.[oKey];
+
+            if (oldVal && newVal !== oldVal) {
+              markets_change[mKey][oKey] = newVal > oldVal ? 1 : -1; // 1: Arttı, -1: Düştü
+            } else {
+              markets_change[mKey][oKey] = oldVal ? (oldChanges[mKey]?.[oKey] || 0) : 0; // Eski trendi koru veya 0 (sabit)
+            }
+          }
+        }
+
         upserts.push({
           fixture_id: fix.fixture_id,
           odds_data: {
             source: 'İddaa / Nesine',
             markets,
+            markets_change, // Yeni eklenen trend verisi DB'ye gidiyor
             nesine_name: `${best.HN} - ${best.AN}`,
           },
           updated_at: new Date().toISOString(),
