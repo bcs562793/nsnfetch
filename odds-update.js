@@ -160,6 +160,29 @@ const TEAM_ALIASES = {
   'fc midtjylland'             : 'midtjylland',
   'sønderjyske'                : 'sonderjyske',
   'pacos de ferreira'          : 'p ferreira',
+   // Yeni eklenmesi gerekenler (loglardan):
+  's cristal'        : 'sporting cristal',  // veya tersi
+  'cajamarca'        : 'cajamarca',           // Nesine'deki karşılığı
+  'palmeiras sp'     : 'palmeiras',          // zaten var ama kontrol et
+  
+  // Diğer kritik eksikler:
+  'strasbourg'       : 'strasbourg',          // vs Mainz yerine Rennes
+  'mainz'            : 'mainz',
+  'celta vigo'       : 'celta vigo',
+  'freiburg'         : 'freiburg',
+  'aston villa'      : 'aston villa',
+  'bologna'          : 'bologna',
+  'hanwell town'     : 'hanwell town',
+  'farnham town'     : 'farnham town',
+  
+  // Türkçe karakter/normalizasyon sorunları:
+  'g birliği'        : 'gençlerbirliği',
+  'genclikbirligi'   : 'gençlerbirliği',
+  
+  // Kısaltmalar:
+  'not forest'       : 'nottingham forest',
+  'not. forest'      : 'nottingham forest',
+  'cry. palace'      : 'crystal palace',
 };
 
 function normWithAlias(s) {
@@ -320,37 +343,39 @@ function findBestMatch(fix, events, opts) {
   //   Başka event: HN="Cajamarca" → ev.AN ile DB.home="S. Cristal" karşılaştır
   //   Bu şekilde "Cajamarca" vs "S. Cristal" eventini bulur
 
-  let bestCross = null, bestCrossScore = -1;
-  const homeDB = normWithAlias(fix.home_team);
-  const awayDB = normWithAlias(fix.away_team);
+  // Aşama 2: Çapraz eşleşme - GÜNCELLENMİŞ
+let bestCross = null, bestCrossScore = -1;
+const homeDB = normWithAlias(fix.home_team);
+const awayDB = normWithAlias(fix.away_team);
 
-  for (const ev of events) {
-    const hn = norm(ev.HN);
-    const an = norm(ev.AN);
+for (const ev of events) {
+  const hn = norm(ev.HN);
+  const an = norm(ev.AN);
+  
+  // 4 olası çapraz kombinasyon
+  const combos = [
+    // ev.HN ≈ DB.home (güçlü), ev.AN vs DB.away (çapraz)
+    { strong: tokenSim(homeDB, hn), cross: tokenSim(awayDB, an), label: 'HN≈home' },
+    // ev.AN ≈ DB.home (güçlü), ev.HN vs DB.away (çapraz)  
+    { strong: tokenSim(homeDB, an), cross: tokenSim(awayDB, hn), label: 'AN≈home' },
+    // ev.HN ≈ DB.away (güçlü), ev.AN vs DB.home (çapraz)
+    { strong: tokenSim(awayDB, hn), cross: tokenSim(homeDB, an), label: 'HN≈away' },
+    // ev.AN ≈ DB.away (güçlü), ev.HN vs DB.home (çapraz)
+    { strong: tokenSim(awayDB, an), cross: tokenSim(homeDB, hn), label: 'AN≈away' },
+  ];
 
-    // Her 4 kombinasyon: (hangi DB takımı, nerede güçlü, çapraz diğer taraf)
-    const combos = [
-      // ev.HN ≈ DB.home  →  ev.AN vs DB.away
-      { strongSim: tokenSim(homeDB, hn), crossSim: tokenSim(awayDB, an), label: 'HN≈home' },
-      // ev.AN ≈ DB.home  →  ev.HN vs DB.away  (Nesine'de ters yazılmış)
-      { strongSim: tokenSim(homeDB, an), crossSim: tokenSim(awayDB, hn), label: 'AN≈home' },
-      // ev.HN ≈ DB.away  →  ev.AN vs DB.home  (Nesine'de ters yazılmış)
-      { strongSim: tokenSim(awayDB, hn), crossSim: tokenSim(homeDB, an), label: 'HN≈away' },
-      // ev.AN ≈ DB.away  →  ev.HN vs DB.home
-      { strongSim: tokenSim(awayDB, an), crossSim: tokenSim(homeDB, hn), label: 'AN≈away' },
-    ];
-
-    for (const c of combos) {
-      if (c.strongSim >= ONE_SIDE_HIGH && c.crossSim >= CROSS_MIN) {
-        // Güven skoru: güçlü tarafın baskısıyla normalize edilmiş ortalama
-        const confidence = (c.strongSim + c.crossSim) / 2;
-        if (confidence > bestCrossScore) {
-          bestCrossScore = confidence;
-          bestCross = { ev, label: c.label };
-        }
+  for (const c of combos) {
+    // DÜZELTME: strong >= ONE_SIDE_HIGH ve cross >= CROSS_MIN
+    if (c.strong >= ONE_SIDE_HIGH && c.cross >= CROSS_MIN) {
+      const confidence = (c.strong + c.cross) / 2;
+      // DÜZELTME: confidence >= THRESHOLD (bestCrossScore değil)
+      if (confidence >= THRESHOLD && confidence > bestCrossScore) {
+        bestCrossScore = confidence;
+        bestCross = { ev, label: c.label, strong: c.strong, cross: c.cross };
       }
     }
   }
+}
 
   if (bestCross && bestCrossScore >= THRESHOLD) {
     return { ev: bestCross.ev, score: bestCrossScore, method: `cross(${bestCross.label})` };
@@ -404,10 +429,10 @@ async function run() {
 
   // ── Eşleşme eşikleri ────────────────────────
   const MATCH_OPTS = {
-    THRESHOLD    : 0.40,  // genel minimum güven skoru
-    MIN_PER_TEAM : 0.25,  // normal modda her takım için minimum
-    ONE_SIDE_HIGH: 0.70,  // çapraz mod için "güçlü" taraf eşiği
-    CROSS_MIN    : 0.30,  // çapraz modda "zayıf" taraf minimum eşiği
+    THRESHOLD    : 0.35,  // 0.40 → 0.35 (daha toleranslı)
+  MIN_PER_TEAM : 0.20,  // 0.25 → 0.20 (normal mod için)
+  ONE_SIDE_HIGH: 0.65,  // 0.70 → 0.65 (çapraz mod "güçlü" taraf)
+  CROSS_MIN    : 0.25,
   };
 
   const upserts     = [];
