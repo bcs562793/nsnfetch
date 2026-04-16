@@ -1,11 +1,22 @@
 /**
- * SCOREPOP — odds-update.js  (v7 - Trend Eklentisi)
- * Değişiklikler v5 → v6:
- * 1. Per-takım min eşiği 0.35 → 0.25, genel THRESHOLD 0.45 → 0.40
- * 2. Eşleşme bulunamazsa home/away ters kontrol
- * 3. TEAM_ALIASES ile özel isim düzeltmeleri
- * v6 -> v7 (Yeni):
- * 4. markets_change objesi eklendi (oran düşüş/yükseliş takibi)
+ * SCOREPOP — odds-update.js  (v8 - Çapraz Eşleşme)
+ * Değişiklikler v7 → v8:
+ * 
+ * SORUN (v7'de):
+ *   DB: "S. Cristal" vs "Cajamarca"
+ *   Nesine'de "S. Cristal" tek başına başka bir maçta var:
+ *     "Palmeiras SP" vs "S. Cristal"  → ev=0.00, dep=1.00, avg=0.50
+ *   avg=0.50 > THRESHOLD=0.40 ama MIN_PER_TEAM=0.25 engeline takılıyor (ev=0.00)
+ *   Yani Nesine'de "Cajamarca" olan maç hiç bulunamıyor.
+ * 
+ * ÇÖZÜM (v8):
+ *   3 aşamalı eşleşme stratejisi:
+ *   [Aşama 1] Normal: her iki taraf da MIN_PER_TEAM ≥ 0.25 → mevcut mantık (değişmedi)
+ *   [Aşama 2] Çapraz: bir taraf ONE_SIDE_HIGH ≥ 0.70, diğer taraf < 0.15 ise
+ *             → tüm eventleri tara, "güçlü" takımı home veya away'de bul
+ *             → o event'in DİĞER takımını DB'nin diğer takımıyla karşılaştır
+ *             → çapraz skor ≥ CROSS_MIN ise eşleştir
+ *   [Aşama 3] Bulunamazsa debug
  */
 'use strict';
 
@@ -124,7 +135,6 @@ const TEAM_ALIASES = {
   'bragantino'                  : 'rb bragantino',
   'palmeiras'                   : 'palmeiras sp',
   'gremio'                      : 'gremio p',
-  // TEAM_ALIASES'e eklenecekler
   'baltika'                    : 'b kaliningrad',
   'velez'                      : 'v sarsfield',
   's shenhua'                  : 'shanghai s',
@@ -253,6 +263,102 @@ function parseMarkets(maArr) {
   return markets;
 }
 
+/* ═══════════════════════════════════════════════════════════
+ * v8 YENİ: findBestMatch — 3 aşamalı eşleşme motoru
+ *
+ * Parametreler:
+ *   fix     — { home_team, away_team }
+ *   events  — Nesine event listesi
+ *   opts    — { THRESHOLD, MIN_PER_TEAM, ONE_SIDE_HIGH, CROSS_MIN }
+ *
+ * Dönüş:
+ *   { ev, score, method }  veya  null
+ *
+ * Yöntemler:
+ *   'normal'  — her iki taraf da MIN_PER_TEAM ≥ eşiği geçti
+ *   'cross'   — bir taraf yüksek, diğer taraf aynı event içinde çapraz bulundu
+ * ═══════════════════════════════════════════════════════════ */
+function findBestMatch(fix, events, opts) {
+  const { THRESHOLD, MIN_PER_TEAM, ONE_SIDE_HIGH, CROSS_MIN } = opts;
+
+  // ── Aşama 1: Normal çift eşleşme (v7 ile aynı) ──────────
+  let bestNormal = null, bestNormalScore = THRESHOLD - 0.01;
+
+  for (const ev of events) {
+    const normal  = matchScore(fix.home_team, fix.away_team, ev);
+    const swapped = matchScore(fix.away_team, fix.home_team, ev);
+    const s = normal.avg >= swapped.avg ? normal : swapped;
+
+    if (s.hs >= MIN_PER_TEAM && s.as_ >= MIN_PER_TEAM && s.avg > bestNormalScore) {
+      bestNormalScore = s.avg;
+      bestNormal = ev;
+    }
+  }
+
+  if (bestNormal) return { ev: bestNormal, score: bestNormalScore, method: 'normal' };
+
+  // ── Aşama 2: Çapraz eşleşme ──────────────────────────────
+  //
+  // Mantık:
+  //   Nesine'de her event için şunu kontrol et:
+  //   • event.HN, DB'nin home_team'ine çok benziyorsa (≥ ONE_SIDE_HIGH)
+  //     → event.AN ile DB'nin away_team'ini karşılaştır
+  //   • event.AN, DB'nin home_team'ine çok benziyorsa (≥ ONE_SIDE_HIGH)
+  //     → event.HN ile DB'nin away_team'ini karşılaştır
+  //   • event.HN, DB'nin away_team'ine çok benziyorsa (≥ ONE_SIDE_HIGH)
+  //     → event.AN ile DB'nin home_team'ini karşılaştır
+  //   • event.AN, DB'nin away_team'ine çok benziyorsa (≥ ONE_SIDE_HIGH)
+  //     → event.HN ile DB'nin home_team'ini karşılaştır
+  //
+  //   "Güçlü" taraf + çapraz taraf = toplam güven skoru.
+  //   En yüksek çapraz güven ≥ CROSS_MIN ise eşleştir.
+  //
+  // Bu, şu durumu çözer:
+  //   DB: "S. Cristal" vs "Cajamarca"
+  //   Nesine: "S. Cristal" vs "Sporting Cristal" (HN="S. Cristal" → eşleşiyor)
+  //   Aynı event içinde AN="Sporting Cristal" ile DB.away="Cajamarca" kötü → atla
+  //   Başka event: HN="Cajamarca" → ev.AN ile DB.home="S. Cristal" karşılaştır
+  //   Bu şekilde "Cajamarca" vs "S. Cristal" eventini bulur
+
+  let bestCross = null, bestCrossScore = -1;
+  const homeDB = normWithAlias(fix.home_team);
+  const awayDB = normWithAlias(fix.away_team);
+
+  for (const ev of events) {
+    const hn = norm(ev.HN);
+    const an = norm(ev.AN);
+
+    // Her 4 kombinasyon: (hangi DB takımı, nerede güçlü, çapraz diğer taraf)
+    const combos = [
+      // ev.HN ≈ DB.home  →  ev.AN vs DB.away
+      { strongSim: tokenSim(homeDB, hn), crossSim: tokenSim(awayDB, an), label: 'HN≈home' },
+      // ev.AN ≈ DB.home  →  ev.HN vs DB.away  (Nesine'de ters yazılmış)
+      { strongSim: tokenSim(homeDB, an), crossSim: tokenSim(awayDB, hn), label: 'AN≈home' },
+      // ev.HN ≈ DB.away  →  ev.AN vs DB.home  (Nesine'de ters yazılmış)
+      { strongSim: tokenSim(awayDB, hn), crossSim: tokenSim(homeDB, an), label: 'HN≈away' },
+      // ev.AN ≈ DB.away  →  ev.HN vs DB.home
+      { strongSim: tokenSim(awayDB, an), crossSim: tokenSim(homeDB, hn), label: 'AN≈away' },
+    ];
+
+    for (const c of combos) {
+      if (c.strongSim >= ONE_SIDE_HIGH && c.crossSim >= CROSS_MIN) {
+        // Güven skoru: güçlü tarafın baskısıyla normalize edilmiş ortalama
+        const confidence = (c.strongSim + c.crossSim) / 2;
+        if (confidence > bestCrossScore) {
+          bestCrossScore = confidence;
+          bestCross = { ev, label: c.label };
+        }
+      }
+    }
+  }
+
+  if (bestCross && bestCrossScore >= THRESHOLD) {
+    return { ev: bestCross.ev, score: bestCrossScore, method: `cross(${bestCross.label})` };
+  }
+
+  return null;
+}
+
 /* ── Ana ────────────────────────────────────── */
 async function run() {
   console.log('[Odds] Supabase maçları çekiliyor...');
@@ -276,13 +382,13 @@ async function run() {
   console.log(`[Odds] ${allFixtures.length} maç bulundu`);
   if (!allFixtures.length) { console.log('[Odds] Maç yok.'); return; }
 
-  // YENİ EKLEME (V7) 1. KISIM: Veritabanındaki eski oranları (trend için) çekiyoruz
+  // Eski oranları çek (trend analizi için)
   console.log('[Odds] Eski oranlar çekiliyor (Trend analizi için)...');
   const { data: existingDbOdds } = await sb
     .from('match_odds')
     .select('fixture_id, odds_data')
     .in('fixture_id', allFixtures.map(f => f.fixture_id));
-  
+
   const oldOddsMap = {};
   (existingDbOdds || []).forEach(row => {
     oldOddsMap[row.fixture_id] = row.odds_data || {};
@@ -296,46 +402,30 @@ async function run() {
   const events = (nesineData?.sg?.EA || []).filter(e => e.TYPE === 1);
   console.log(`[Odds] Nesine'de ${events.length} futbol etkinliği`);
 
-  const THRESHOLD    = 0.40;  // v5: 0.45
-  const MIN_PER_TEAM = 0.25;  // v5: 0.35
+  // ── Eşleşme eşikleri ────────────────────────
+  const MATCH_OPTS = {
+    THRESHOLD    : 0.40,  // genel minimum güven skoru
+    MIN_PER_TEAM : 0.25,  // normal modda her takım için minimum
+    ONE_SIDE_HIGH: 0.70,  // çapraz mod için "güçlü" taraf eşiği
+    CROSS_MIN    : 0.30,  // çapraz modda "zayıf" taraf minimum eşiği
+  };
 
   const upserts     = [];
   const debugMissed = [];
 
+  // Yöntem istatistikleri
+  const stats = { normal: 0, cross: 0, missed: 0 };
+
   for (const fix of allFixtures) {
-    let best = null, bestScore = THRESHOLD - 0.01;
-    let bestSwapped = false;
+    const result = findBestMatch(fix, events, MATCH_OPTS);
 
-    const allCandidates = events.map(ev => {
-      const normal  = matchScore(fix.home_team, fix.away_team, ev);
-      const swapped = matchScore(fix.away_team, fix.home_team, ev);
-      const useSwap = swapped.avg > normal.avg;
-      return {
-        hn: ev.HN, an: ev.AN,
-        hs:      useSwap ? swapped.hs  : normal.hs,
-        as_:     useSwap ? swapped.as_ : normal.as_,
-        avg:     useSwap ? swapped.avg : normal.avg,
-        swapped: useSwap,
-        _ev: ev,
-      };
-    });
-
-    for (const c of allCandidates) {
-      if (c.hs < MIN_PER_TEAM || c.as_ < MIN_PER_TEAM) continue;
-      if (c.avg > bestScore) {
-        bestScore   = c.avg;
-        best        = c._ev;
-        bestSwapped = c.swapped;
-      }
-    }
-
-    if (best) {
+    if (result) {
+      const { ev: best, score: bestScore, method } = result;
       const markets = parseMarkets(best.MA);
-      if (Object.keys(markets).length > 0) {
-        const swapLabel = bestSwapped ? ' [TERS]' : '';
 
-        // YENİ EKLEME (V7) 2. KISIM: Eski oranlarla karşılaştırıp değişimi hesaplıyoruz
-        const oldData = oldOddsMap[fix.fixture_id] || {};
+      if (Object.keys(markets).length > 0) {
+        // Trend hesapla
+        const oldData    = oldOddsMap[fix.fixture_id] || {};
         const oldMarkets = oldData.markets || {};
         const oldChanges = oldData.markets_change || {};
         const markets_change = {};
@@ -343,15 +433,13 @@ async function run() {
         for (const mKey of Object.keys(markets)) {
           markets_change[mKey] = {};
           for (const oKey of Object.keys(markets[mKey])) {
-            if (oKey === 'line') continue; // line değişimi trend hesaplamaz
-
+            if (oKey === 'line') continue;
             const newVal = markets[mKey][oKey];
             const oldVal = oldMarkets[mKey]?.[oKey];
-
             if (oldVal && newVal !== oldVal) {
-              markets_change[mKey][oKey] = newVal > oldVal ? 1 : -1; // 1: Arttı, -1: Düştü
+              markets_change[mKey][oKey] = newVal > oldVal ? 1 : -1;
             } else {
-              markets_change[mKey][oKey] = oldVal ? (oldChanges[mKey]?.[oKey] || 0) : 0; // Eski trendi koru veya 0 (sabit)
+              markets_change[mKey][oKey] = oldVal ? (oldChanges[mKey]?.[oKey] || 0) : 0;
             }
           }
         }
@@ -361,35 +449,56 @@ async function run() {
           odds_data: {
             source: 'İddaa / Nesine',
             markets,
-            markets_change, // Yeni eklenen trend verisi DB'ye gidiyor
+            markets_change,
             nesine_name: `${best.HN} - ${best.AN}`,
+            match_method: method,   // hangi aşamada bulunduğunu kaydedelim
           },
           updated_at: new Date().toISOString(),
         });
-        console.log(`  ✓ ${fix.home_team} vs ${fix.away_team}  →  ${best.HN} vs ${best.AN} (${bestScore.toFixed(2)})${swapLabel} [${Object.keys(markets).join(',')}]`);
-      // Trend sayımı yapalım (Ekranda göstermek için)
+
+        // Trend sayımı
         let upCount = 0, downCount = 0;
-        for (const mKey in markets_change) {
+        for (const mKey in markets_change)
           for (const oKey in markets_change[mKey]) {
-            if (markets_change[mKey][oKey] === 1) upCount++;
+            if (markets_change[mKey][oKey] === 1)  upCount++;
             if (markets_change[mKey][oKey] === -1) downCount++;
           }
-        }
-        const trendMsg = (upCount > 0 || downCount > 0) ? ` | Trend: ${upCount}↑ ${downCount}↓` : '';
+        const trendMsg  = (upCount > 0 || downCount > 0) ? ` | Trend: ${upCount}↑ ${downCount}↓` : '';
+        const methodTag = method.startsWith('cross') ? ` [ÇAPRAZ:${method}]` : '';
 
-        console.log(`  ✓ ${fix.home_team} vs ${fix.away_team}  →  ${best.HN} vs ${best.AN} (${bestScore.toFixed(2)})${swapLabel} [${Object.keys(markets).length} market]${trendMsg}`);
+        console.log(`  ✓ ${fix.home_team} vs ${fix.away_team}  →  ${best.HN} vs ${best.AN} (${bestScore.toFixed(2)})${methodTag} [${Object.keys(markets).length} market]${trendMsg}`);
+        stats[method.startsWith('cross') ? 'cross' : 'normal']++;
       } else {
         console.log(`  ~ ${fix.home_team} vs ${fix.away_team}  →  eşleşti ama market yok`);
       }
     } else {
       console.log(`  ✗ ${fix.home_team} vs ${fix.away_team}  →  eşleşme bulunamadı`);
-      const top3 = allCandidates
+
+      // Debug için en yakın adayları bul
+      const top3 = events
+        .map(ev => {
+          const normal  = matchScore(fix.home_team, fix.away_team, ev);
+          const swapped = matchScore(fix.away_team, fix.home_team, ev);
+          const useSwap = swapped.avg > normal.avg;
+          return {
+            hn: ev.HN, an: ev.AN,
+            hs:      useSwap ? swapped.hs  : normal.hs,
+            as_:     useSwap ? swapped.as_ : normal.as_,
+            avg:     useSwap ? swapped.avg : normal.avg,
+            swapped: useSwap,
+          };
+        })
         .filter(c => c.hs > 0.15 || c.as_ > 0.15)
         .sort((a, b) => b.avg - a.avg)
         .slice(0, 3);
+
       debugMissed.push({ fix, top3 });
+      stats.missed++;
     }
   }
+
+  // ── Özet ────────────────────────────────────
+  console.log(`\n[Odds] Eşleşme özeti: Normal=${stats.normal} | Çapraz=${stats.cross} | Bulunamadı=${stats.missed}`);
 
   if (!upserts.length) {
     console.log('[Odds] Upsert edilecek veri yok.');
@@ -433,6 +542,7 @@ async function run() {
   console.log('[DEBUG] İpuçları:');
   console.log('  • ⚠️ ALIAS ekle  → TEAM_ALIASES objesine ekle');
   console.log('  • [ters]         → DB\'de home/away yanlış');
+  console.log('  • [ÇAPRAZ]       → v8 çapraz eşleşme ile bulundu');
   console.log('  • Aday yok       → Nesine\'de bu maç yok');
   console.log('─'.repeat(60) + '\n');
 }
