@@ -91,11 +91,20 @@ Future<Map<int, Map<String, String>>> _fetchBilyonerMatches() async {
       if (events == null) { print('  [WARN] events null tabType=$tab'); continue; }
       int count = 0;
       for (final entry in events.entries) {
-        final id  = int.tryParse(entry.key);
+        final rawId = entry.key; // Gelen ID'yi önce string olarak al
+        
+        // EKLENEN KONTROL: ID boşsa, null ise veya "null" yazısı ise atla!
+        if (rawId == null || rawId == 'null' || rawId.trim().isEmpty) {
+          continue;
+        }
+
+        final id  = int.tryParse(rawId); // Artık güvenle sayıya çevirebiliriz
         final ev  = entry.value as Map<String, dynamic>?;
         final htn = ev?['htn']?.toString();
         final atn = ev?['atn']?.toString();
+        
         if (id == null || htn == null || htn.isEmpty || atn == null || atn.isEmpty) continue;
+        
         result.putIfAbsent(id, () => {'home': htn, 'away': atn});
         count++;
       }
