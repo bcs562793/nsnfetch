@@ -11,7 +11,10 @@ final _sbKey = Platform.environment['SUPABASE_KEY'] ?? '';
 
 const _bilyonerBase  = 'https://www.bilyoner.com';
 const _platformToken = '40CAB7292CD83F7EE0631FC35A0AFC75';
-const _deviceId      = 'C1A34687-8F75-47E8-9FF9-1D231F05782E';
+
+// Auth Token ve Device ID için önbellek değişkenleri
+String? _cachedAuthToken;
+String? _cachedDeviceId;
 
 // ── sync_fixtures(3)'ten alınan Takım İsim Normalizasyon Sabitleri ──
 const _nicknames = <String, String>{
@@ -285,12 +288,6 @@ Future<void> _patch(String table, int fid, Map<String, dynamic> data) async {
 }
 
 // ── Bilyoner headers ───────────────────────────────────────────
-import 'dart:math';
-
-// Mevcut _cachedAuthToken ve _cachedDeviceId değişkenleri yukarıda tanımlı olmalı
-String? _cachedAuthToken;
-String? _cachedDeviceId;
-
 String _generateUuidV4() {
   final rng = Random.secure();
   final bytes = List<int>.generate(16, (_) => rng.nextInt(256));
