@@ -284,19 +284,33 @@ Future<void> _patch(String table, int fid, Map<String, dynamic> data) async {
 }
 
 // ── Bilyoner headers ───────────────────────────────────────────
-Map<String, String> _bilyonerHeaders() => {
-  'accept':                   'application/json, text/plain, */*',
-  'accept-language':          'tr',
-  'cache-control':            'no-cache',
-  'pragma':                   'no-cache',
-  'referer':                  '$_bilyonerBase/canli-iddaa',
-  'user-agent':               'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
-  'platform-token':           _platformToken,
-  'x-client-app-version':     '3.98.1',
-  'x-client-browser-version': 'Chrome / v147.0.0.0',
-  'x-client-channel':         'WEB',
-  'x-device-id':              _deviceId,
-};
+String? _cachedAuthToken;
+String? _cachedDeviceId;
+
+Map<String, String> _bilyonerHeaders() {
+  // İlk çalıştırmada üret, sonra aynısını kullan (session tutarlılığı)
+  _cachedDeviceId ??= const Uuid().v4().toUpperCase();
+  _cachedAuthToken ??= () {
+    final uuid = const Uuid().v4().replaceAll('-', '');
+    final ts   = DateTime.now().millisecondsSinceEpoch;
+    return '$uuid$ts';
+  }();
+
+  return {
+    'accept':                   'application/json, text/plain, */*',
+    'accept-language':          'tr,en-US;q=0.9,en;q=0.8',
+    'cache-control':            'no-cache',
+    'pragma':                   'no-cache',
+    'referer':                  '$_bilyonerBase/canli-iddaa',
+    'user-agent':               'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+    'platform-token':           _platformToken,
+    'x-auth-token':             _cachedAuthToken!,   // ← EKLENDİ (EN KRİTİK)
+    'x-client-app-version':     '3.98.1',
+    'x-client-browser-version': 'Chrome / v147.0.0.0',
+    'x-client-channel':         'WEB',
+    'x-device-id':              _cachedDeviceId!,    // ← DİNAMİK UUID
+  };
+}
 
 Map<String, String> _sbHeaders() => {
   'apikey':        _sbKey,
