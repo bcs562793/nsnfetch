@@ -12,20 +12,41 @@ const _bilyonerBase  = 'https://www.bilyoner.com';
 const _platformToken = '40CAB7292CD83F7EE0631FC35A0AFC75';
 const _deviceId      = 'C1A34687-8F75-47E8-9FF9-1D231F05782E';
 
+// ── sync_fixtures(3)'ten alınan Takım İsim Normalizasyon Sabitleri ──
+const _nicknames = <String, String>{
+  'spurs': 'tottenham',
+  'inter': 'internazionale',
+};
+
+const _wordTrToEn = <String, String>{
+  'munih': 'munich', 'munchen': 'munich',
+  'marsilya': 'marseille', 'kopenhag': 'copenhagen',
+  'bruksel': 'brussels', 'prag': 'prague',
+  'lizbon': 'lisbon', 'viyana': 'vienna',
+};
+
+const _noise = <String>{
+  'fc', 'sc', 'cf', 'ac', 'if', 'bk', 'sk', 'fk',
+  'afc', 'bfc', 'cfc', 'sfc', 'rfc',
+  'cp', 'cd', 'sd', 'ud', 'rc', 'rcd', 'as', 'ss',
+};
+
 Future<void> main() async {
   print('🔄 Bilyoner Sync başlıyor...');
 
   if (_sbUrl.isEmpty || _sbKey.isEmpty) {
-    print('❌ SUPABASE env eksik'); exit(1);
+    print('❌ SUPABASE env eksik. Lütfen SUPABASE_URL ve SUPABASE_KEY ortam değişkenlerini ayarlayın.'); 
+    exit(1);
   }
 
   // ── 1. Bilyoner'den canlı futbol maçlarını çek ─────────────────
-  print('📡 Bilyoner canlı maç listesi çekiliyor...');
+  print('📡 Bilyoner maç listesi çekiliyor...');
 
   final List<Map<String, dynamic>> bilyonerMatches = [];
 
   // Yöntem A: live-score event listesi (sbsEventId + takım adları)
   try {
+    print('  [LOG] İstek atılıyor: live-score (SOCCER)...');
     final res = await http.get(
       Uri.parse('$_bilyonerBase/api/mobile/live-score/event/v2/sport-list?sportType=SOCCER'),
       headers: _bilyonerHeaders(),
@@ -42,14 +63,18 @@ Future<void> main() async {
         if (sbsId == null || htn.isEmpty) continue;
         bilyonerMatches.add({'id': sbsId, 'home': htn, 'away': atn, 'source': 'live-score'});
       }
-      print('   live-score: ${bilyonerMatches.length} maç');
+      print('  ✅ live-score: ${events.length} event bulundu, ${bilyonerMatches.where((e) => e['source'] == 'live-score').length} maç eklendi.');
+    } else {
+      print('  ⚠️ live-score HTTP Hata Kodu: ${res.statusCode}');
+      print('  ⚠️ Yanıt: ${res.body.length > 200 ? res.body.substring(0, 200) + '...' : res.body}');
     }
   } catch (e) {
-    print('   ⚠️ live-score hatası: $e');
+    print('  ❌ live-score istisna (exception) hatası: $e');
   }
 
-  // Yöntem B: bulletinType=1 (canlı iddaa bülteni) — daha fazla maç içerir
+  // Yöntem B: bulletinType=1 (canlı iddaa bülteni)
   try {
+    print('  [LOG] İstek atılıyor: bulletinType=1...');
     final res = await http.get(
       Uri.parse('$_bilyonerBase/api/sportsbetting/sports/1/events?bulletinType=1'),
       headers: _bilyonerHeaders(),
@@ -57,7 +82,7 @@ Future<void> main() async {
 
     if (res.statusCode == 200) {
       final body = jsonDecode(res.body);
-      final events = (body is List ? body : (body['events'] ?? body['data'] ?? [])) as List;
+      final events = _extractEvents(body);
       int added = 0;
       for (final ev in events) {
         if (ev is! Map) continue;
@@ -65,19 +90,22 @@ Future<void> main() async {
         final htn   = (ev['homeTeamName'] ?? ev['home'] ?? ev['htn'] ?? '').toString();
         final atn   = (ev['awayTeamName'] ?? ev['away'] ?? ev['atn'] ?? '').toString();
         if (sbsId == null || htn.isEmpty) continue;
-        // Duplicate kontrolü
-        if (bilyonerMatches.any((m) => m['id'] == sbsId)) continue;
-        bilyonerMatches.add({'id': sbsId, 'home': htn, 'away': atn, 'source': 'bulletin'});
+        
+        if (bilyonerMatches.any((m) => m['id'] == sbsId)) continue; // Duplicate kontrolü
+        bilyonerMatches.add({'id': sbsId, 'home': htn, 'away': atn, 'source': 'bulletin(1)'});
         added++;
       }
-      print('   bulletin(1): $added ek maç');
+      print('  ✅ bulletin(1): $added ek maç eklendi.');
+    } else {
+      print('  ⚠️ bulletin(1) HTTP Hata Kodu: ${res.statusCode}');
     }
   } catch (e) {
-    print('   ⚠️ bulletin(1) hatası: $e');
+    print('  ❌ bulletin(1) istisna (exception) hatası: $e');
   }
 
   // Yöntem C: pre-match bülteni (bulletinType=3) — yaklaşan maçlar için
   try {
+    print('  [LOG] İstek atılıyor: bulletinType=3...');
     final res = await http.get(
       Uri.parse('$_bilyonerBase/api/sportsbetting/sports/1/events?bulletinType=3'),
       headers: _bilyonerHeaders(),
@@ -85,7 +113,7 @@ Future<void> main() async {
 
     if (res.statusCode == 200) {
       final body = jsonDecode(res.body);
-      final events = (body is List ? body : (body['events'] ?? body['data'] ?? [])) as List;
+      final events = _extractEvents(body);
       int added = 0;
       for (final ev in events) {
         if (ev is! Map) continue;
@@ -93,21 +121,24 @@ Future<void> main() async {
         final htn   = (ev['homeTeamName'] ?? ev['home'] ?? ev['htn'] ?? '').toString();
         final atn   = (ev['awayTeamName'] ?? ev['away'] ?? ev['atn'] ?? '').toString();
         if (sbsId == null || htn.isEmpty) continue;
+        
         if (bilyonerMatches.any((m) => m['id'] == sbsId)) continue;
-        bilyonerMatches.add({'id': sbsId, 'home': htn, 'away': atn, 'source': 'prematch'});
+        bilyonerMatches.add({'id': sbsId, 'home': htn, 'away': atn, 'source': 'bulletin(3)'});
         added++;
       }
-      print('   bulletin(3): $added ek maç');
+      print('  ✅ bulletin(3): $added ek maç eklendi.');
+    } else {
+      print('  ⚠️ bulletin(3) HTTP Hata Kodu: ${res.statusCode}');
     }
   } catch (e) {
-    print('   ⚠️ bulletin(3) hatası: $e');
+    print('  ❌ bulletin(3) istisna (exception) hatası: $e');
   }
 
   if (bilyonerMatches.isEmpty) {
-    print('❌ Bilyoner\'den hiç maç çekilemedi. Çıkılıyor.');
+    print('❌ Bilyoner\'den hiç maç çekilemedi. Sonlandırılıyor.');
     exit(1);
   }
-  print('   Toplam: ${bilyonerMatches.length} Bilyoner maçı');
+  print('  📦 Toplam Çekilen Benzersiz Bilyoner Maçı: ${bilyonerMatches.length}');
 
   // ── 2. Supabase'den live_matches çek ───────────────────────────
   print('\n📡 Supabase live_matches çekiliyor...');
@@ -119,10 +150,10 @@ Future<void> main() async {
   ).timeout(const Duration(seconds: 15));
 
   if (liveRes.statusCode != 200) {
-    print('❌ live_matches HTTP ${liveRes.statusCode}'); exit(1);
+    print('❌ live_matches HTTP ${liveRes.statusCode}: ${liveRes.body}'); exit(1);
   }
   final liveList = (jsonDecode(liveRes.body) as List).cast<Map>();
-  print('   ${liveList.length} canlı maç');
+  print('  ✅ Supabase: ${liveList.length} canlı/NS maç.');
 
   // ── 3. Supabase'den future_matches çek ────────────────────────
   print('📡 Supabase future_matches çekiliyor...');
@@ -136,10 +167,9 @@ Future<void> main() async {
   ).timeout(const Duration(seconds: 15));
 
   if (futRes.statusCode != 200) {
-    print('❌ future_matches HTTP ${futRes.statusCode}'); exit(1);
+    print('❌ future_matches HTTP ${futRes.statusCode}: ${futRes.body}'); exit(1);
   }
 
-  // future_matches'ten takım adlarını parse et
   final futList = <Map<String, dynamic>>[];
   for (final row in (jsonDecode(futRes.body) as List).cast<Map>()) {
     final fid = _int(row['fixture_id']);
@@ -150,9 +180,12 @@ Future<void> main() async {
           ? jsonDecode(row['data'] as String)
           : row['data'];
       final payload = d is List ? d[0] : d;
+      // future_matches -> data içindeki takımları çıkartma
       home = payload?['teams']?['home']?['name']?.toString() ?? '';
       away = payload?['teams']?['away']?['name']?.toString() ?? '';
-    } catch (_) {}
+    } catch (e) {
+      print('  ⚠️ [LOG] JSON Data Parse Hatası: (fixture_id: $fid) -> $e');
+    }
     futList.add({
       'fixture_id': fid,
       'home': home,
@@ -160,9 +193,10 @@ Future<void> main() async {
       'bilyoner_id': row['bilyoner_id'],
     });
   }
-  print('   ${futList.length} gelecek maç');
+  print('  ✅ Supabase: ${futList.length} gelecek maç.');
 
   // ── 4. Eşleştir ve yaz ────────────────────────────────────────
+  print('\n⚙️ Eşleştirme Algoritması Başlıyor...');
   int liveMatched = 0, futMatched = 0, skipped = 0;
 
   for (final bm in bilyonerMatches) {
@@ -170,12 +204,11 @@ Future<void> main() async {
     final bHome = _norm(bm['home'].toString());
     final bAway = _norm(bm['away'].toString());
 
-    // live_matches'te ara
+    // 1. Önce live_matches içinde eşleşme ara
     Map? bestLive; double bestLiveScore = 0;
     for (final sb in liveList) {
-      // Zaten yazılmışsa atla
       if (_int(sb['bilyoner_id']) == bid) { bestLive = sb; bestLiveScore = 1.0; break; }
-      if (_int(sb['bilyoner_id']) != null) continue; // başka ID yazılmış, atla
+      if (_int(sb['bilyoner_id']) != null) continue; // başka ID atanmışsa atla
 
       final hs = _sim(bHome, _norm(sb['home_team']?.toString() ?? ''));
       final as_ = _sim(bAway, _norm(sb['away_team']?.toString() ?? ''));
@@ -187,20 +220,22 @@ Future<void> main() async {
     if (bestLive != null && bestLiveScore >= 0.55) {
       final fid = _int(bestLive['fixture_id'])!;
       if (_int(bestLive['bilyoner_id']) != bid) {
-        print('🔗 [LIVE] bid=$bid ↔ fid=$fid (${bestLiveScore.toStringAsFixed(2)}) ${bm["home"]} vs ${bm["away"]}');
+        print('  🔗 [LIVE PATCH] Bilyoner:$bid ↔ Supabase:$fid (Skor: ${bestLiveScore.toStringAsFixed(2)}) | ${bm["home"]} vs ${bm["away"]}');
         await _patch('live_matches', fid, {'bilyoner_id': bid});
       }
       liveMatched++;
+      continue; // Live'da bulduysak future'a bakmaya gerek yok
     }
 
-    // future_matches'te ara
+    // 2. future_matches içinde eşleşme ara (Live'da bulunamadıysa)
     Map<String, dynamic>? bestFut; double bestFutScore = 0;
     for (final fb in futList) {
       if (_int(fb['bilyoner_id']) == bid) { bestFut = fb; bestFutScore = 1.0; break; }
-      if (_int(fb['bilyoner_id']) != null) continue;
+      if (_int(fb['bilyoner_id']) != null) continue; // Başka id yazılmış, geç.
 
       final hs  = _sim(bHome, _norm(fb['home'].toString()));
       final as_ = _sim(bAway, _norm(fb['away'].toString()));
+      
       if (hs < 0.45 || as_ < 0.45) continue;
       final s = (hs + as_) / 2;
       if (s > bestFutScore) { bestFutScore = s; bestFut = fb; }
@@ -209,24 +244,22 @@ Future<void> main() async {
     if (bestFut != null && bestFutScore >= 0.55) {
       final fid = _int(bestFut['fixture_id'])!;
       if (_int(bestFut['bilyoner_id']) != bid) {
-        print('🔗 [FUT]  bid=$bid ↔ fid=$fid (${bestFutScore.toStringAsFixed(2)}) ${bm["home"]} vs ${bm["away"]}');
+        print('  🔗 [FUTURE PATCH] Bilyoner:$bid ↔ Supabase:$fid (Skor: ${bestFutScore.toStringAsFixed(2)}) | ${bm["home"]} vs ${bm["away"]}');
         await _patch('future_matches', fid, {'bilyoner_id': bid});
       }
       futMatched++;
-    }
-
-    if ((bestLive == null || bestLiveScore < 0.55) &&
-        (bestFut  == null || bestFutScore  < 0.55)) {
-      print('⚠️  Eşleşme yok: ${bm["home"]} vs ${bm["away"]} (bid=$bid, src=${bm["source"]})');
+    } else {
+      // Sadece eşleşmeyenler için debug log yazılır, çok gürültü yapmaması için yorum satırında bırakıldı, gerekirse açılabilir.
+      // print('  ⚠️ Eşleşme yok: ${bm["home"]} vs ${bm["away"]} (bid=$bid, kaynak=${bm["source"]})');
       skipped++;
     }
   }
 
   print('\n══════════════════════════════════════');
-  print('  ✅ Live eşleşti  : $liveMatched');
-  print('  ✅ Fut eşleşti   : $futMatched');
-  print('  ⚠️  Eşleşmedi    : $skipped');
-  print('  📦 Toplam        : ${bilyonerMatches.length}');
+  print('  ✅ Live tablosu eşleşti  : $liveMatched');
+  print('  ✅ Future tablosu eşleşti: $futMatched');
+  print('  ⚠️ Eşleşmedi             : $skipped');
+  print('  📦 Toplam Bilyoner Maçı  : ${bilyonerMatches.length}');
   print('══════════════════════════════════════');
   exit(0);
 }
@@ -240,11 +273,22 @@ Future<void> _patch(String table, int fid, Map<String, dynamic> data) async {
       body: jsonEncode(data),
     ).timeout(const Duration(seconds: 8));
     if (res.statusCode >= 300) {
-      print('   ❌ $table patch hatası: ${res.statusCode} ${res.body}');
+      print('    ❌ $table patch hatası: ${res.statusCode} ${res.body}');
     }
   } catch (e) {
-    print('   ❌ $table patch exception: $e');
+    print('    ❌ $table patch exception: $e');
   }
+}
+
+// ── Güvenli JSON Ayrıştırıcı ───────────────────────────────────
+List _extractEvents(dynamic body) {
+  if (body is List) return body;
+  if (body is Map) {
+    if (body['events'] is List) return body['events'];
+    if (body['data'] is List) return body['data'];
+    if (body['data'] is Map && body['data']['events'] is List) return body['data']['events'];
+  }
+  return [];
 }
 
 // ── Bilyoner headers ───────────────────────────────────────────
@@ -281,7 +325,7 @@ String _addDays(String dateStr, int n) {
   return '${d.year}-${p(d.month)}-${p(d.day)}';
 }
 
-// ── Yardımcılar ────────────────────────────────────────────────
+// ── Yardımcılar ve sync_fixtures(3) tabanlı Normalizasyon ──────
 int? _int(dynamic v) {
   if (v == null) return null;
   if (v is int) return v;
@@ -289,17 +333,31 @@ int? _int(dynamic v) {
   return int.tryParse(v.toString());
 }
 
-String _norm(String s) => s.toLowerCase()
-    .replaceAll('ı','i').replaceAll('ğ','g').replaceAll('ü','u')
-    .replaceAll('ş','s').replaceAll('ö','o').replaceAll('ç','c')
-    .replaceAll('é','e').replaceAll('è','e').replaceAll('ê','e').replaceAll('ë','e')
-    .replaceAll('á','a').replaceAll('à','a').replaceAll('â','a').replaceAll('ä','a').replaceAll('ã','a')
-    .replaceAll('ó','o').replaceAll('ò','o').replaceAll('ô','o').replaceAll('õ','o')
-    .replaceAll('ú','u').replaceAll('ù','u').replaceAll('û','u')
-    .replaceAll('í','i').replaceAll('ì','i').replaceAll('î','i')
-    .replaceAll('ñ','n').replaceAll('ø','o').replaceAll('å','a')
-    .replaceAll('ć','c').replaceAll('č','c').replaceAll('ž','z').replaceAll('š','s')
-    .replaceAll(RegExp(r'[^\w\s]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
+String _norm(String name) {
+  var s = name.toLowerCase().trim();
+  if (_nicknames.containsKey(s)) s = _nicknames[s]!;
+  
+  // Basit harf ve boşluk karakteri çevirisi
+  s = s
+      .replaceAll('ş', 's').replaceAll('ğ', 'g').replaceAll('ü', 'u')
+      .replaceAll('ö', 'o').replaceAll('ç', 'c').replaceAll('ı', 'i')
+      .replaceAll(RegExp(r'[éèêë]'), 'e').replaceAll(RegExp(r'[áàâãäå]'), 'a')
+      .replaceAll(RegExp(r'[óòôõø]'), 'o').replaceAll(RegExp(r'[úùûů]'), 'u')
+      .replaceAll(RegExp(r'[íìî]'), 'i').replaceAll('ñ', 'n')
+      .replaceAll(RegExp(r'[ćč]'), 'c').replaceAll('ž', 'z')
+      .replaceAll('š', 's').replaceAll('ý', 'y').replaceAll('ř', 'r');
+  
+  s = s.replaceAll(RegExp(r"[.\-_/'\\()]"), ' ');
+  
+  // İngilizce eşleşmeleri iyileştirmek için çevirmen kullanımı (_wordTrToEn)
+  final tokens = s
+      .split(RegExp(r'\s+'))
+      .where((t) => t.isNotEmpty && !_noise.contains(t))
+      .map((t) => _wordTrToEn[t] ?? t)
+      .toList();
+      
+  return tokens.join(' ').trim();
+}
 
 double _sim(String a, String b) {
   if (a == b) return 1.0;
