@@ -285,14 +285,25 @@ Future<void> _patch(String table, int fid, Map<String, dynamic> data) async {
 }
 
 // ── Bilyoner headers ───────────────────────────────────────────
+import 'dart:math';
+
+// Mevcut _cachedAuthToken ve _cachedDeviceId değişkenleri yukarıda tanımlı olmalı
 String? _cachedAuthToken;
 String? _cachedDeviceId;
 
+String _generateUuidV4() {
+  final rng = Random.secure();
+  final bytes = List<int>.generate(16, (_) => rng.nextInt(256));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant
+  final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0,8)}-${hex.substring(8,12)}-${hex.substring(12,16)}-${hex.substring(16,20)}-${hex.substring(20)}';
+}
+
 Map<String, String> _bilyonerHeaders() {
-  // İlk çalıştırmada üret, sonra aynısını kullan (session tutarlılığı)
-  _cachedDeviceId ??= const Uuid().v4().toUpperCase();
+  _cachedDeviceId ??= _generateUuidV4().toUpperCase();
   _cachedAuthToken ??= () {
-    final uuid = const Uuid().v4().replaceAll('-', '');
+    final uuid = _generateUuidV4().replaceAll('-', '');
     final ts   = DateTime.now().millisecondsSinceEpoch;
     return '$uuid$ts';
   }();
@@ -305,11 +316,11 @@ Map<String, String> _bilyonerHeaders() {
     'referer':                  '$_bilyonerBase/canli-iddaa',
     'user-agent':               'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
     'platform-token':           _platformToken,
-    'x-auth-token':             _cachedAuthToken!,   // ← EKLENDİ (EN KRİTİK)
+    'x-auth-token':             _cachedAuthToken!,
     'x-client-app-version':     '3.98.1',
     'x-client-browser-version': 'Chrome / v147.0.0.0',
     'x-client-channel':         'WEB',
-    'x-device-id':              _cachedDeviceId!,    // ← DİNAMİK UUID
+    'x-device-id':              _cachedDeviceId!,
   };
 }
 
