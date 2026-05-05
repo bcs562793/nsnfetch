@@ -1,126 +1,71 @@
-// bilyoner_sync.dart — GitHub Actions cron ile calisir
-// Bilyoner canli mac listesi -> live_matches + future_matches bilyoner_id yazar
-//
-// HAR ANALIZI (05.05.2026):
-// CALISMIYOR: /gamelist/sport/1/v1 (401), /live/sport/1/v1 (401),
-//             live-score?sportType=SOCCER (400)
-// CALISIYOR (200, auth yok):
-//   GET /api/v3/mobile/aggregator/gamelist/events/{id}  -> htn,atn,id
-//   GET /api/v3/mobile/aggregator/match-card/{id}/league-events
-//       -> liveGameList.events[].{id,htn,atn} (tum canli maclar)
-//       -> preGameList.events[].{id,htn,atn}  (yaklasan maclar)
-// STRATEJI: HTML'den seed ID topla -> gamelist/events/{id} dogrula
-//           -> league-events ile tam liste
-
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'package:http/http.dart' as http;
+import 'package:supabase/supabase.dart';
 
-final _sbUrl = Platform.environment['SUPABASE_URL'] ?? '';
-final _sbKey = Platform.environment['SUPABASE_KEY'] ?? '';
+// ── Sabitler ──────────────────────────────────────────────────────────────────
 
-const _bilyonerBase  = 'https://www.bilyoner.com';
-const _platformToken = '40CAB7292CD83F7EE0631FC35A0AFC75';
-// HAR'dan son bilinen event ID (05.05.2026)
-const _lastKnownEventId = 2935198;
+const _teamsJsonUrl =
+    'https://raw.githubusercontent.com/bcs562793/H2Hscrape/main/data/teams.json';
+
+const _mackolikBase = 'https://vd.mackolik.com';
+
+// Mackolik m[] array alan indeksleri
+// [0]  fixture_id (Mackolik internal ID)
+// [1]  home_team_id
+// [2]  home_team_name
+// [3]  away_team_id
+// [4]  away_team_name
+// [5]  sport_type   (4=futbol, 13=basketbol, ...)
+// [6]  status_text  ("MS"=bitti, "IY"=ilk yarı bitti, "45'"=dakika, "Pen", "UZ", "Ert.", ""=başlamadı)
+// [7]  score        ("1-1" | "")
+// [12] home_goals   (int)
+// [13] away_goals   (int)
+// [14] betradar_id
+// [15] extra_obj    {aeleme, e, goal, h1, h2, k1, k2, ogd, tId}
+// [16] time         ("17:00")
+// [17] live_flag    (0/1)
+// [34] tier         ("1","2","3","4")
+// [35] date         ("DD/MM/YYYY")
+// [36] league_array [country_id, country_name_tr, league_id, league_name_tr, season_id, season_str, "", cup, ?, league_code, ?, ?]
+// [37] has_odds     (0/1)
+
+// ── Normalizasyon ─────────────────────────────────────────────────────────────
 
 const _nicknames = <String, String>{
-  'spurs': 'tottenham', 'inter': 'internazionale',
+  'spurs': 'tottenham',
+  'inter': 'internazionale',
 };
+
 const _wordTrToEn = <String, String>{
-  'munih': 'munich', 'munchen': 'munich',
-  'marsilya': 'marseille', 'kopenhag': 'copenhagen',
-  'bruksel': 'brussels', 'prag': 'prague',
-  'lizbon': 'lisbon', 'viyana': 'vienna',
+  'munih': 'munich',
+  'munchen': 'munich',
+  'marsilya': 'marseille',
+  'kopenhag': 'copenhagen',
+  'bruksel': 'brussels',
+  'prag': 'prague',
+  'lizbon': 'lisbon',
+  'viyana': 'vienna',
 };
+
 const _noise = <String>{
   'fc', 'sc', 'cf', 'ac', 'if', 'bk', 'sk', 'fk',
   'afc', 'bfc', 'cfc', 'sfc', 'rfc',
   'cp', 'cd', 'sd', 'ud', 'rc', 'rcd', 'as', 'ss',
 };
 
-String? _cachedAuthToken;
-String? _cachedDeviceId;
-
-String _generateUuidV4() {
-  final rng = Random.secure();
-  final bytes = List<int>.generate(16, (_) => rng.nextInt(256));
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-  return '${hex.substring(0,8)}-${hex.substring(8,12)}-${hex.substring(12,16)}-${hex.substring(16,20)}-${hex.substring(20)}';
-}
-
-// HAR dogrulamali token formati: {uuid_no_dashes}{timestamp_ms}
-String _getAuthToken() {
-  _cachedAuthToken ??= () {
-    final uuid = _generateUuidV4().replaceAll('-', '');
-    final ts = DateTime.now().millisecondsSinceEpoch;
-    return '$uuid$ts';
-  }();
-  return _cachedAuthToken!;
-}
-
-String _getDeviceId() {
-  _cachedDeviceId ??= _generateUuidV4().toUpperCase();
-  return _cachedDeviceId!;
-}
-
-Map<String, String> _bilyonerHeaders({String? referer}) => {
-  'accept':                   'application/json, text/plain, */*',
-  'accept-language':          'tr,en-US;q=0.9,en;q=0.8',
-  'cache-control':            'no-cache',
-  'pragma':                   'no-cache',
-  'referer':                  referer ?? '$_bilyonerBase/canli-iddaa',
-  'user-agent':               'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
-  'platform-token':           _platformToken,
-  'x-auth-token':             _getAuthToken(),
-  'x-client-app-version':     '3.98.1',
-  'x-client-browser-version': 'Chrome / v147.0.0.0',
-  'x-client-channel':         'WEB',
-  'x-device-id':              _getDeviceId(),
-};
-
-Map<String, String> _sbHeaders() => {
-  'apikey':        _sbKey,
-  'Authorization': 'Bearer $_sbKey',
-  'Prefer':        'return=minimal',
-};
-
-String _todayTR() {
-  final now = DateTime.now().toUtc().add(const Duration(hours: 3));
-  final p   = (int n) => n.toString().padLeft(2, '0');
-  return '${now.year}-${p(now.month)}-${p(now.day)}';
-}
-
-String _addDays(String dateStr, int n) {
-  final d = DateTime.parse('${dateStr}T00:00:00').add(Duration(days: n));
-  final p = (int x) => x.toString().padLeft(2, '0');
-  return '${d.year}-${p(d.month)}-${p(d.day)}';
-}
-
-int? _int(dynamic v) {
-  if (v == null) return null;
-  if (v is int) return v;
-  if (v is double) return v.toInt();
-  return int.tryParse(v.toString());
-}
-
 String _norm(String name) {
   var s = name.toLowerCase().trim();
   if (_nicknames.containsKey(s)) s = _nicknames[s]!;
   s = s
-      .replaceAll(RegExp(r'[şs]'), 's')
-      .replaceAll(RegExp(r'[ğg]'), 'g')
-      .replaceAll(RegExp(r'[üu]'), 'u')
-      .replaceAll(RegExp(r'[öo]'), 'o')
-      .replaceAll(RegExp(r'[çc]'), 'c')
-      .replaceAll(RegExp(r'[ıi]'), 'i')
-      .replaceAll(RegExp(r'[eéè]'), 'e')
-      .replaceAll(RegExp(r'[aàâ]'), 'a')
-      .replaceAll(RegExp(r'[nñ]'), 'n');
-  s = s.replaceAll(RegExp(r"[.\-/'()]"), ' ');
+      .replaceAll('ş', 's').replaceAll('ğ', 'g').replaceAll('ü', 'u')
+      .replaceAll('ö', 'o').replaceAll('ç', 'c').replaceAll('ı', 'i')
+      .replaceAll(RegExp(r'[éèê]'), 'e').replaceAll(RegExp(r'[áàâãäå]'), 'a')
+      .replaceAll(RegExp(r'[óòôõø]'), 'o').replaceAll(RegExp(r'[úùûů]'), 'u')
+      .replaceAll(RegExp(r'[íìî]'), 'i').replaceAll('ñ', 'n')
+      .replaceAll(RegExp(r'[ćč]'), 'c').replaceAll('ž', 'z')
+      .replaceAll('š', 's').replaceAll('ý', 'y').replaceAll('ř', 'r');
+  s = s.replaceAll(RegExp(r"[.\-_/'\\()]"), ' ');
   final tokens = s
       .split(RegExp(r'\s+'))
       .where((t) => t.isNotEmpty && !_noise.contains(t))
@@ -129,291 +74,630 @@ String _norm(String name) {
   return tokens.join(' ').trim();
 }
 
-double _sim(String a, String b) {
-  if (a == b) return 1.0;
-  if (a.contains(b) || b.contains(a)) return 0.9;
-  final w1 = a.split(' ').where((t) => t.length > 1).toSet();
-  final w2 = b.split(' ').where((t) => t.length > 1).toSet();
-  if (w1.isEmpty || w2.isEmpty) return 0.0;
-  final j = w1.intersection(w2).length / w1.union(w2).length;
-  if (j >= 0.5) return 0.7 + j * 0.2;
-  if (a.length >= 3 && b.length >= 3 && a.substring(0,3) == b.substring(0,3)) return 0.6;
-  return j * 0.5;
+// ── Logo index ────────────────────────────────────────────────────────────────
+
+class _MatchResult {
+  final String bilyonerName, country, matchedName, logoUrl, method;
+  final double score;
+  const _MatchResult({
+    required this.bilyonerName, required this.country,
+    required this.matchedName,  required this.score,
+    required this.logoUrl,      required this.method,
+  });
 }
 
-// ADIM 1: HTML sayfalarindan seed event ID adaylarini topla
-Future<Set<int>> _collectSeedIdsFromHtml() async {
-  final candidates = <int>{};
-  final pages = [
-    '$_bilyonerBase/canli-iddaa',
-    '$_bilyonerBase/iddaa/futbol',
-    '$_bilyonerBase/iddaa',
-  ];
-  for (final pageUrl in pages) {
-    try {
-      final res = await http.get(Uri.parse(pageUrl), headers: {
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'accept-language': 'tr,en-US;q=0.9,en;q=0.8',
-      }).timeout(const Duration(seconds: 12));
-      if (res.statusCode != 200) continue;
-      final body = res.body;
-      print('  [LOG] HTML cekildi: $pageUrl (${body.length} char)');
-      // Pattern A: /mac-karti/futbol/{ID}/ linkleri
-      for (final m in RegExp(r'/mac-karti/futbol/(\d{6,8})/').allMatches(body)) {
-        final id = _int(m.group(1)); if (id != null) candidates.add(id);
+class _LogoIndex {
+  final Map<String, String> _exact = {};
+  final List<String> _names = [], _logos = [], _mackoliks = [], _countries = [];
+  int matched = 0, fallback = 0;
+  final Map<String, _MatchResult> _log = {};
+
+  _LogoIndex(List<dynamic> teams) {
+    for (final t in teams) {
+      final name = (t['n'] as String? ?? '').trim();
+      final country = (t['c'] as String? ?? '').trim();
+      final logo = (t['l'] as String? ?? '').trim();
+      final mackolikUrl = (t['m'] as String? ?? '').trim();
+      if (name.isEmpty || logo.isEmpty) continue;
+      final normalized = _norm(name);
+      _exact['$normalized|${country.toLowerCase()}'] = logo;
+      _exact['$normalized|'] = logo;
+      _names.add(normalized);
+      _logos.add(logo);
+      _mackoliks.add(mackolikUrl);
+      _countries.add(country.toLowerCase());
+    }
+    print('🗂  Logo index: ${_names.length} takım');
+  }
+
+  String resolve(String teamName, String country, int? teamId) {
+    final logKey = '$teamName|$country';
+    String record(_MatchResult r) {
+      _log.putIfAbsent(logKey, () => r);
+      return r.logoUrl;
+    }
+
+    if (teamName.isEmpty) {
+      return record(_MatchResult(
+        bilyonerName: teamName, country: country,
+        matchedName: '', score: -1,
+        logoUrl: _fallbackUrl(null, teamId), method: 'empty',
+      ));
+    }
+
+    final q = _norm(teamName);
+    final c = country.toLowerCase();
+
+    final exactC = _exact['$q|$c'];
+    if (exactC != null && exactC.isNotEmpty) {
+      matched++;
+      return record(_MatchResult(
+        bilyonerName: teamName, country: country,
+        matchedName: q, score: 1.0, logoUrl: exactC, method: 'exact',
+      ));
+    }
+
+    final exactN = _exact['$q|'];
+    if (exactN != null && exactN.isNotEmpty) {
+      matched++;
+      return record(_MatchResult(
+        bilyonerName: teamName, country: country,
+        matchedName: q, score: 1.0, logoUrl: exactN, method: 'exact',
+      ));
+    }
+
+    int bestIdx = -1;
+    double bestScore = 0;
+    for (int i = 0; i < _names.length; i++) {
+      final score = _tokenScore(q, _names[i]);
+      if (score > bestScore) { bestScore = score; bestIdx = i; }
+    }
+
+    if (bestIdx >= 0 && bestScore >= 0.55) {
+      double adj = bestScore;
+      if (c.isNotEmpty && _countries[bestIdx].isNotEmpty && c != _countries[bestIdx]) {
+        if (bestScore < 0.80) adj -= 0.10;
       }
-      // Pattern B: data-event-id attribute
-      for (final m in RegExp('data-event-id="(\\d{6,8})"').allMatches(body)) {
-        final id = _int(m.group(1)); if (id != null) candidates.add(id);
+      if (adj >= 0.50 && _logos[bestIdx].isNotEmpty) {
+        matched++;
+        return record(_MatchResult(
+          bilyonerName: teamName, country: country,
+          matchedName: _names[bestIdx], score: adj,
+          logoUrl: _logos[bestIdx], method: 'fuzzy',
+        ));
       }
-      // Pattern C: eventId= query/JSON
-      for (final m in RegExp('(?:"eventId"|eventId=)(\\d{6,8})').allMatches(body)) {
-        final id = _int(m.group(1)); if (id != null) candidates.add(id);
+    }
+
+    fallback++;
+    final mk = bestIdx >= 0 ? _mackoliks[bestIdx] : '';
+    final url = _fallbackUrl(mk, teamId);
+    return record(_MatchResult(
+      bilyonerName: teamName, country: country,
+      matchedName: bestIdx >= 0 ? _names[bestIdx] : '',
+      score: bestIdx >= 0 ? bestScore : -1,
+      logoUrl: url,
+      method: url.isEmpty ? 'empty' : (mk.isNotEmpty ? 'fallback_m' : 'fallback_id'),
+    ));
+  }
+
+  void printReport() {
+    final results = _log.values.toList();
+    final ok = results.where((r) => r.method == 'exact' || r.method == 'fuzzy').toList();
+    final bad = results.where((r) => r.method.startsWith('fallback') || r.method == 'empty').toList();
+    if (bad.isNotEmpty) {
+      print('\n── ⚠️  Eşleşemeyen takımlar (${bad.length}) ──');
+      for (final r in bad..sort((a, b) => a.bilyonerName.compareTo(b.bilyonerName))) {
+        final s = r.score >= 0 ? ' (en yakın: ${r.score.toStringAsFixed(2)}, "${r.matchedName}")' : '';
+        print('  ✗ [${r.method.padRight(11)}] "${r.bilyonerName}" [${r.country}]$s');
       }
-      // Pattern D: INITIAL_STATE / NEXT_DATA icerisindeki 7-8 haneli sayilar
-      for (final kw in ['INITIAL_STATE', '__NEXT_DATA__']) {
-        final idx = body.indexOf(kw);
-        if (idx < 0) continue;
-        final win = body.substring(idx, (idx + 60000).clamp(0, body.length));
-        for (final m in RegExp(r'\b(\d{7,8})\b').allMatches(win)) {
-          final id = _int(m.group(1));
-          if (id != null && id > 2000000) candidates.add(id);
+    }
+    print('\n── ✅ Eşleşen takımlar (${ok.length}) ──');
+    for (final r in ok..sort((a, b) => a.bilyonerName.compareTo(b.bilyonerName))) {
+      final d = r.method == 'fuzzy' ? ' → "${r.matchedName}" (${r.score.toStringAsFixed(2)})' : '';
+      print('  ✓ [${r.method.padRight(5)}] "${r.bilyonerName}" [${r.country}]$d');
+    }
+  }
+
+  String _fallbackUrl(String? mk, int? teamId) {
+    if (mk != null && mk.isNotEmpty) return mk;
+    if (teamId != null) return 'https://im.mackolik.com/img/logo/buyuk/$teamId.gif';
+    return '';
+  }
+
+  double _tokenScore(String qStr, String tStr) {
+    if (qStr == tStr) return 1.0;
+    final qT = qStr.split(' '), tT = tStr.split(' ');
+    if (qT.isEmpty || tT.isEmpty) return 0.0;
+    if (qT.length == 1 && tT.length > 1) {
+      final initials = tT.map((t) => t[0]).join('');
+      if (initials == qT[0] || initials.startsWith(qT[0])) return 0.95;
+    }
+    double total = 0; int matched = 0;
+    for (final qt in qT) {
+      double best = 0;
+      for (final tt in tT) {
+        double cur = 0;
+        if (qt == tt) { cur = 1.0; }
+        else if (tt.startsWith(qt)) { cur = qt.length == 1 ? 0.85 : 0.85 + (qt.length / tt.length * 0.15); }
+        else if (qt.startsWith(tt)) { cur = 0.80; }
+        else {
+          final min = qt.length < tt.length ? qt.length : tt.length;
+          if (min >= 4 && qt.substring(0, 4) == tt.substring(0, 4)) { cur = 0.70; }
+          else if ((tt.contains(qt) || qt.contains(tt)) && qt.length >= 3) { cur = 0.65; }
         }
+        if (cur > best) best = cur;
       }
-      if (candidates.isNotEmpty) {
-        print('  [LOG] HTML kaynagli ${candidates.length} aday ID');
-        break;
+      total += best;
+      if (best >= 0.65) matched++;
+    }
+    return (total / qT.length * 0.85) + (matched / tT.length * 0.15);
+  }
+}
+
+Future<_LogoIndex> _loadLogoIndex() async {
+  try {
+    final res = await http.get(Uri.parse(_teamsJsonUrl))
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode != 200) { print('⚠️  teams.json HTTP ${res.statusCode}'); return _LogoIndex([]); }
+    return _LogoIndex(jsonDecode(res.body) as List);
+  } catch (e) { print('⚠️  teams.json yüklenemedi: $e'); return _LogoIndex([]); }
+}
+
+// ── Mackolik status dönüşümleri ───────────────────────────────────────────────
+
+String _statusShort(String s) {
+  if (s.isEmpty) return 'NS';
+  if (s == 'MS') return 'FT';
+  if (s == 'IY') return 'HT';
+  if (s == 'Ert.' || s == 'Ert') return 'PST';
+  if (s == 'Pen') return 'PEN';
+  if (s == 'UZ') return 'ET';
+  final min = int.tryParse(s.replaceAll("'", ''));
+  if (min != null) return min <= 45 ? '1H' : '2H';
+  return 'NS';
+}
+
+int? _elapsedFrom(String s) => int.tryParse(s.replaceAll("'", ''));
+
+String _statusLong(String short) => switch (short) {
+  'NS'  => 'Not Started',
+  'FT'  => 'Match Finished',
+  'HT'  => 'Halftime',
+  'PST' => 'Postponed',
+  'PEN' => 'Penalty In Progress',
+  'ET'  => 'Extra Time',
+  '1H'  => 'First Half',
+  '2H'  => 'Second Half',
+  _     => 'Not Started',
+};
+
+// ── Tarih / saat yardımcıları ─────────────────────────────────────────────────
+
+// "DD/MM/YYYY" + "HH:MM" → "YYYY-MM-DDTHH:MM:00+03:00"
+String _toIso(String ddmmyyyy, String hhmm) {
+  final dp = ddmmyyyy.split('/');
+  if (dp.length != 3) return '';
+  final d = dp[0].padLeft(2, '0'), mo = dp[1].padLeft(2, '0'), y = dp[2];
+  final tp = hhmm.split(':');
+  final h = tp.isNotEmpty ? tp[0].padLeft(2, '0') : '00';
+  final mi = tp.length > 1 ? tp[1].padLeft(2, '0') : '00';
+  return '$y-$mo-${d}T$h:$mi:00+03:00';
+}
+
+int _toTimestamp(String ddmmyyyy, String hhmm) {
+  final iso = _toIso(ddmmyyyy, hhmm);
+  if (iso.isEmpty) return 0;
+  try { return DateTime.parse(iso).millisecondsSinceEpoch ~/ 1000; } catch (_) { return 0; }
+}
+
+// "DD/MM/YYYY" → "YYYY-MM-DD"
+String _toDateKey(String ddmmyyyy) {
+  final p = ddmmyyyy.split('/');
+  if (p.length != 3) return '';
+  return '${p[2]}-${p[1].padLeft(2, '0')}-${p[0].padLeft(2, '0')}';
+}
+
+// DateTime (TR) → "DD/MM/YYYY"
+String _trDateToDDMMYYYY(DateTime tr) {
+  final pad = (int n) => n.toString().padLeft(2, '0');
+  return '${pad(tr.day)}/${pad(tr.month)}/${tr.year}';
+}
+
+// DateTime (TR) → "YYYY-MM-DD"
+String _trDateToYMD(DateTime tr) {
+  final pad = (int n) => n.toString().padLeft(2, '0');
+  return '${tr.year}-${pad(tr.month)}-${pad(tr.day)}';
+}
+
+// ── Ülke çıkarma ──────────────────────────────────────────────────────────────
+
+const _lgCountryMap = <String, String>{
+  'almanya': 'Germany', 'ispanya': 'Spain',   'italya': 'Italy',
+  'fransa': 'France',   'hollanda': 'Netherlands', 'portekiz': 'Portugal',
+  'brezilya': 'Brazil', 'arjantin': 'Argentina',   'turkiye': 'Turkey',
+  'turk': 'Turkey',     'belcika': 'Belgium',       'isvicre': 'Switzerland',
+  'avustralya': 'Australia', 'japonya': 'Japan',    'danimarka': 'Denmark',
+  'norvec': 'Norway',   'isvec': 'Sweden',    'finlandiya': 'Finland',
+  'polonya': 'Poland',  'hirvatistan': 'Croatia',   'slovenya': 'Slovenia',
+  'slovakya': 'Slovakia', 'cekya': 'Czech Republic', 'macaristan': 'Hungary',
+  'romanya': 'Romania', 'bulgaristan': 'Bulgaria',  'sirbistan': 'Serbia',
+  'yunanistan': 'Greece', 'avusturya': 'Austria',   'iskocya': 'Scotland',
+  'ingiltere': 'England', 'galler': 'Wales',         'kolombiya': 'Colombia',
+  'meksika': 'Mexico',  'sili': 'Chile',       'misir': 'Egypt',
+  'fas': 'Morocco',     'cezayir': 'Algeria',  'nijerya': 'Nigeria',
+  'gana': 'Ghana',      'abd': 'USA',          'kanada': 'Canada',
+  'arnavutluk': 'Albania', 'karadag': 'Montenegro', 'letonya': 'Latvia',
+  'litvanya': 'Lithuania', 'estonya': 'Estonia',    'ukrayna': 'Ukraine',
+  'rusya': 'Russia',    'azerbaycan': 'Azerbaijan', 'gurcistan': 'Georgia',
+  'ermenistan': 'Armenia', 'honduras': 'Honduras',  'guatemala': 'Guatemala',
+  'panama': 'Panama',   'paraguay': 'Paraguay',     'uruguay': 'Uruguay',
+  'bolivya': 'Bolivia', 'peru': 'Peru',        'ekvador': 'Ecuador',
+  'tanzanya': 'Tanzania', 'kenya': 'Kenya',    'tunus': 'Tunisia',
+  'irak': 'Iraq',       'suriye': 'Syria',     'iran': 'Iran',
+  'katar': 'Qatar',     'hindistan': 'India',  'cin': 'China',
+  'endonezya': 'Indonesia', 'tayland': 'Thailand', 'malezya': 'Malaysia',
+  'izlanda': 'Iceland', 'kibris': 'Cyprus',    'israil': 'Israel',
+  'kazakistan': 'Kazakhstan', 'ozbekistan': 'Uzbekistan',
+  'irlanda': 'Ireland', 'irland': 'Ireland',
+  'guney_afrika': 'South Africa',  'kuzey_irlanda': 'Northern Ireland',
+  'kosta_rika': 'Costa Rica',      'el_salvador': 'El Salvador',
+  'suudi_arabistan': 'Saudi Arabia', 'guney_kore': 'South Korea',
+  'yeni_zelanda': 'New Zealand',   'kuzey_makedonya': 'North Macedonia',
+  'bosna_hersek': 'Bosnia and Herzegovina',
+};
+
+String _normC(String s) => s
+    .toLowerCase()
+    .replaceAll('ş', 's').replaceAll('ğ', 'g').replaceAll('ü', 'u')
+    .replaceAll('ö', 'o').replaceAll('ç', 'c').replaceAll('ı', 'i')
+    .replaceAll('İ', 'i').replaceAll('â', 'a').replaceAll('î', 'i')
+    .replaceAll('ô', 'o');
+
+// Mackolik'te ülke adı direkt geliyor (m[36][1] = "Türkiye"), tek kelime → map
+String _countryFromTr(String trName) {
+  if (trName.isEmpty) return '';
+  final words = trName.trim().split(RegExp(r'\s+'));
+  if (words.length >= 2) {
+    final k2 = '${_normC(words[0])}_${_normC(words[1])}';
+    if (_lgCountryMap.containsKey(k2)) return _lgCountryMap[k2]!;
+  }
+  return _lgCountryMap[_normC(words[0])] ?? trName;
+}
+
+// ── Mackolik API ──────────────────────────────────────────────────────────────
+
+Map<String, String> _mackolikHeaders() => {
+  'accept': 'application/json, text/plain, */*',
+  'accept-language': 'tr-TR,tr;q=0.9',
+  'accept-encoding': 'gzip, deflate, br',
+  'cache-control': 'no-cache',
+  'pragma': 'no-cache',
+  'referer': 'https://www.mackolik.com/',
+  'origin': 'https://www.mackolik.com',
+  'user-agent':
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+};
+
+/// Bir güne ait Mackolik verilerini çeker.
+/// Sadece futbol (sport_type == 4) ve geçerli uzunluktaki (>=38) kayıtları döner.
+Future<List<List<dynamic>>> _fetchMackolikDay(String ddmmyyyy) async {
+  final uri = Uri.parse('$_mackolikBase/livedata?date=$ddmmyyyy');
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await Future.delayed(Duration(seconds: attempt * 8));
+    try {
+      final res = await http
+          .get(uri, headers: _mackolikHeaders())
+          .timeout(const Duration(seconds: 30));
+
+      if (res.statusCode == 403 || res.statusCode == 429) {
+        print('⚠️  Mackolik engel [${res.statusCode}] ($ddmmyyyy, deneme ${attempt + 1}/3)');
+        await Future.delayed(Duration(seconds: (attempt + 1) * 15));
+        continue;
       }
+      if (res.statusCode != 200) {
+        print('⚠️  Mackolik HTTP ${res.statusCode} ($ddmmyyyy, deneme ${attempt + 1}/3)');
+        continue;
+      }
+
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      final raw = body['m'] as List<dynamic>? ?? [];
+
+      // Futbol filtresi: m[5] == 4, minimum 38 alan
+      final football = raw
+          .whereType<List<dynamic>>()
+          .where((m) {
+  if (m.length < 38) return false;
+  final lgArr = m[36] as List<dynamic>? ?? const [];
+  if (lgArr.length <= 11) return false;
+  final sportType = (lgArr[11] as num?)?.toInt();
+  return sportType == 1;
+})
+          .toList();
+
+      print('📋 Mackolik $ddmmyyyy: ${raw.length} toplam → ${football.length} futbol');
+      return football;
     } catch (e) {
-      print('  [WARN] HTML hatasi ($pageUrl): $e');
+      print('⚠️  Mackolik $ddmmyyyy hata (deneme ${attempt + 1}/3): $e');
     }
   }
-  return candidates;
+  return [];
 }
 
-// ADIM 2: gamelist/events/{id} ile seed ID dogrula
-// HAR kaniti: auth gerektirmez, htn+atn icerir, 200 doner
-Future<int?> _findValidSeedId(Set<int> candidates) async {
-  final toTry = candidates.toList()..sort((a, b) => b.compareTo(a));
-  for (final id in toTry.take(30)) {
-    try {
-      final url = '$_bilyonerBase/api/v3/mobile/aggregator/gamelist/events/$id';
-      final res = await http.get(Uri.parse(url), headers: _bilyonerHeaders())
-          .timeout(const Duration(seconds: 6));
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
-        if (data['htn'] != null) {
-          print('  [LOG] Gecerli seed: $id (${data["htn"]} vs ${data["atn"]})');
-          return id;
-        }
-      }
-    } catch (_) {}
-    await Future.delayed(const Duration(milliseconds: 60));
+// ── raw_data builder ──────────────────────────────────────────────────────────
+
+Map<String, dynamic> _buildRawData(
+  List<dynamic> m, {
+  required String homeLogo,
+  required String awayLogo,
+  required String country,
+}) {
+  final id       = (m[0] as num).toInt();
+  final homeId   = (m[1] as num?)?.toInt();
+  final awayId   = (m[3] as num?)?.toInt();
+  final statusTx = (m[6]  as String?) ?? '';
+  final scoreTx  = (m[7]  as String?) ?? '';
+  final timeStr  = (m[16] as String?) ?? '';
+  final dateStr  = (m[35] as String?) ?? '';   // "DD/MM/YYYY"
+  final lgArr    = m[36] as List<dynamic>? ?? const [];
+
+  final short    = _statusShort(statusTx);
+  final elapsed  = _elapsedFrom(statusTx);
+  final isoDate  = _toIso(dateStr, timeStr);
+  final timestamp = _toTimestamp(dateStr, timeStr);
+
+  int? homeGoals, awayGoals;
+  if (scoreTx.contains('-')) {
+    final parts = scoreTx.split('-');
+    homeGoals = int.tryParse(parts[0].trim());
+    awayGoals = int.tryParse(parts.length > 1 ? parts[1].trim() : '');
   }
-  return null;
+
+  return {
+    'fixture': {
+      'id':        id,
+      'timestamp': timestamp,
+      'date':      isoDate,
+      'timezone':  'Europe/Istanbul',
+      'referee':   null,
+      'periods':   {'first': null, 'second': null},
+      'venue':     {'id': null, 'name': null, 'city': null},
+      'status':    {'long': _statusLong(short), 'short': short, 'elapsed': elapsed, 'extra': null},
+    },
+    'teams': {
+      'home': {'id': homeId, 'name': m[2] ?? '', 'logo': homeLogo, 'winner': null},
+      'away': {'id': awayId, 'name': m[4] ?? '', 'logo': awayLogo, 'winner': null},
+    },
+    'league': {
+      'id':        lgArr.length > 2 ? (lgArr[2] as num?)?.toInt() ?? 0 : 0,
+      'name':      lgArr.length > 3 ? lgArr[3] as String? ?? '' : '',
+      'logo':      '',
+      'country':   country,
+      'flag':      null,
+      'season':    lgArr.length > 5 ? lgArr[5] as String? : null,
+      'round':     null,
+      'standings': false,
+    },
+    'goals': {'home': homeGoals ?? 0, 'away': awayGoals ?? 0},
+    'score': {
+      'halftime':  {'home': null, 'away': null},
+      'fulltime':  {'home': null, 'away': null},
+      'extratime': {'home': null, 'away': null},
+      'penalty':   {'home': null, 'away': null},
+    },
+  };
 }
 
-// ADIM 3: league-events ile tum canli + yaklasan maclari cek
-// HAR kaniti: liveGameList + preGameList, htn+atn mevcut
-Future<void> _fetchLeagueEvents(int seedId, List<Map<String, dynamic>> target) async {
-  final url = '$_bilyonerBase/api/v3/mobile/aggregator/match-card/$seedId/league-events';
+// ── Temizlik ──────────────────────────────────────────────────────────────────
+
+Future<void> _cleanStaleRecords(String sbUrl, String sbKey) async {
+  final h = {
+    'apikey':        sbKey,
+    'Authorization': 'Bearer $sbKey',
+    'Prefer':        'return=minimal',
+  };
   try {
-    print('  [LOG] league-events cekiliyor (seed=$seedId)');
-    final res = await http.get(
-      Uri.parse(url),
-      headers: _bilyonerHeaders(referer: '$_bilyonerBase/mac-karti/futbol/$seedId/oranlar/1'),
+    final r = await http.delete(
+      Uri.parse('$sbUrl/rest/v1/live_matches?score_source=neq.nesine&status_short=eq.NS'),
+      headers: h,
     ).timeout(const Duration(seconds: 15));
-    if (res.statusCode != 200) {
-      print('  [WARN] league-events HTTP ${res.statusCode}');
-      return;
-    }
-    final data = jsonDecode(res.body);
-    int count = 0;
-    void extract(dynamic list) {
-      for (final ev in (list ?? []) as List) {
-        final id  = _int(ev['id']);
-        final htn = ev['htn']?.toString();
-        final atn = ev['atn']?.toString();
-        if (id != null && id > 0 && htn != null && htn.isNotEmpty && atn != null && atn.isNotEmpty) {
-          target.add({'id': id, 'home': htn, 'away': atn});
-          count++;
-        }
-      }
-    }
-    extract(data['liveGameList']?['events']);
-    extract(data['preGameList']?['events']);
-    print('  [LOG] league-events: $count mac (live+pre)');
-  } catch (e) {
-    print('  [ERROR] league-events: $e');
-  }
-}
-
-// ADIM 4: Son bilinen ID araligini tara (son care)
-Future<int?> _scanIdRange() async {
-  print('  [WARN] ID aralik taramasi basliyor...');
-  final high = _lastKnownEventId + 2000;
-  final low  = _lastKnownEventId - 500;
-  for (int id = high; id >= low; id -= 15) {
-    try {
-      final url = '$_bilyonerBase/api/v3/mobile/aggregator/gamelist/events/$id';
-      final res = await http.get(Uri.parse(url), headers: _bilyonerHeaders())
-          .timeout(const Duration(seconds: 5));
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
-        if (data['htn'] != null) {
-          print('  [LOG] Aralik taramasi seed buldu: $id');
-          return id;
-        }
-      }
-    } catch (_) {}
-    await Future.delayed(const Duration(milliseconds: 40));
-  }
-  return null;
-}
-
-Future<void> _patch(String table, int fid, Map<String, dynamic> data) async {
+    print('🗑  live_matches NS non-nesine → silindi [${r.statusCode}]');
+  } catch (e) { print('⚠️  live_matches temizleme: $e'); }
   try {
-    final res = await http.patch(
-      Uri.parse('$_sbUrl/rest/v1/$table?fixture_id=eq.$fid'),
-      headers: {..._sbHeaders(), 'Content-Type': 'application/json'},
-      body: jsonEncode(data),
-    ).timeout(const Duration(seconds: 8));
-    if (res.statusCode >= 300) {
-      print('    [ERROR] $table patch: ${res.statusCode} ${res.body}');
-    }
-  } catch (e) {
-    print('    [ERROR] $table patch exception: $e');
-  }
+    final r = await http.delete(
+      Uri.parse('$sbUrl/rest/v1/future_matches?bilyoner_id=gte.0'),
+      headers: h,
+    ).timeout(const Duration(seconds: 15));
+    print('🗑  future_matches → silindi [${r.statusCode}]');
+  } catch (e) { print('⚠️  future_matches temizleme: $e'); }
 }
+
+// ── Batch upsert ──────────────────────────────────────────────────────────────
+
+const _batchSize = 200;
+
+Future<int> _batchUpsert(
+  SupabaseClient sb, String table,
+  List<Map<String, dynamic>> records, String onConflict,
+) async {
+  int errors = 0;
+  for (int i = 0; i < records.length; i += _batchSize) {
+    final chunk = records.sublist(i, (i + _batchSize).clamp(0, records.length));
+    try {
+      await sb.from(table).upsert(chunk, onConflict: onConflict);
+    } catch (e) {
+      print('  ⚠️  $table batch upsert hatası (${i}–${i + chunk.length}): $e');
+      errors += chunk.length;
+    }
+  }
+  return errors;
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
 
 Future<void> main() async {
-  print('[INFO] Bilyoner Sync basliyor...');
-  if (_sbUrl.isEmpty || _sbKey.isEmpty) {
-    print('[ERROR] SUPABASE_URL veya SUPABASE_KEY env degiskeni eksik.');
+  final sbUrl = Platform.environment['SUPABASE_URL'] ?? '';
+  final sbKey = Platform.environment['SUPABASE_KEY'] ?? '';
+  if (sbUrl.isEmpty || sbKey.isEmpty) {
+    print('❌ SUPABASE_URL veya SUPABASE_KEY eksik');
     exit(1);
   }
 
-  // 1. BILYONER MAC LISTESI
-  print('[INFO] Bilyoner mac listesi cekiliyor...');
-  final List<Map<String, dynamic>> rawEvents = [];
+  final sb = SupabaseClient(sbUrl, sbKey);
 
-  final seedCandidates = await _collectSeedIdsFromHtml();
-  int? seedId = await _findValidSeedId(seedCandidates);
-  seedId ??= await _scanIdRange();
+  // Türkiye saatine göre bugün + 4 gün (toplam 5 gün)
+  final trNow = DateTime.now().toUtc().add(const Duration(hours: 3));
+  const totalDays = 5;
 
-  if (seedId != null) {
-    await _fetchLeagueEvents(seedId, rawEvents);
-  }
+  final days = List.generate(totalDays, (i) {
+    final d = trNow.add(Duration(days: i));
+    return (
+      ddmmyyyy: _trDateToDDMMYYYY(d),   // Mackolik API formatı
+      ymd:      _trDateToYMD(d),         // DB formatı
+    );
+  });
 
-  if (rawEvents.isEmpty) {
-    print('[ERROR] Bilyoner mac listesi bos, sonlandiriliyor.');
-    exit(1);
-  }
+  final todayYMD = days[0].ymd;
 
-  final unique = <int, Map<String, dynamic>>{};
-  for (final m in rawEvents) unique[m['id'] as int] = m;
-  final bilyonerMatches = unique.values.toList();
-  print('  [INFO] Toplam benzersiz Bilyoner maci: ${bilyonerMatches.length}');
+  print('📅 Fixture sync (Mackolik) — ${DateTime.now().toIso8601String()}');
+  print('🗓  Bugün (TR): $todayYMD  |  Bitiş: ${days.last.ymd}');
 
-  // 2. SUPABASE live_matches
-  print('[INFO] Supabase live_matches cekiliyor...');
-  final liveRes = await http.get(
-    Uri.parse('$_sbUrl/rest/v1/live_matches'
-        '?select=fixture_id,home_team,away_team,bilyoner_id'
-        '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE,NS)'),
-    headers: _sbHeaders(),
-  ).timeout(const Duration(seconds: 15));
-  if (liveRes.statusCode != 200) {
-    print('[ERROR] live_matches HTTP ${liveRes.statusCode}: ${liveRes.body}');
-    exit(1);
-  }
-  final liveList = (jsonDecode(liveRes.body) as List).cast<Map>();
-  print('  [INFO] Supabase: ${liveList.length} canli/NS mac.');
+  // ═══ 0) Logo index ═══════════════════════════════════════════════════
+  print('\n── Logo index yükleniyor ──');
+  final logoIndex = await _loadLogoIndex();
 
-  // 3. SUPABASE future_matches
-  print('[INFO] Supabase future_matches cekiliyor...');
-  final today  = _todayTR();
-  final cutoff = _addDays(today, 3);
-  final futRes = await http.get(
-    Uri.parse('$_sbUrl/rest/v1/future_matches'
-        '?select=fixture_id,data,bilyoner_id'
-        '&date=gte.$today&date=lte.$cutoff'),
-    headers: _sbHeaders(),
-  ).timeout(const Duration(seconds: 15));
-  if (futRes.statusCode != 200) {
-    print('[ERROR] future_matches HTTP ${futRes.statusCode}: ${futRes.body}');
-    exit(1);
-  }
-  final futList = <Map<String, dynamic>>[];
-  for (final row in (jsonDecode(futRes.body) as List).cast<Map>()) {
-    final fid = _int(row['fixture_id']); if (fid == null) continue;
-    String home = '', away = '';
-    try {
-      final d = row['data'] is String ? jsonDecode(row['data'] as String) : row['data'];
-      final p = d is List ? d[0] : d;
-      home = p?['teams']?['home']?['name']?.toString() ?? '';
-      away = p?['teams']?['away']?['name']?.toString() ?? '';
-    } catch (_) {}
-    futList.add({'fixture_id': fid, 'home': home, 'away': away, 'bilyoner_id': row['bilyoner_id']});
-  }
-  print('  [INFO] Supabase: ${futList.length} gelecek mac.');
+  // ═══ 1) Temizlik ════════════════════════════════════════════════════
+  print('\n── Eski kayıt temizliği ──');
+  await _cleanStaleRecords(sbUrl, sbKey);
 
-  // 4. ESLESTIR ve YAZ
-  print('[INFO] Eslestirme basliyor...');
-  int liveMatched = 0, futMatched = 0, skipped = 0;
-
-  for (final bm in bilyonerMatches) {
-    final bid   = bm['id'] as int;
-    final bHome = _norm(bm['home'].toString());
-    final bAway = _norm(bm['away'].toString());
-
-    Map? bestLive; double bestLiveScore = 0;
-    for (final sb in liveList) {
-      if (_int(sb['bilyoner_id']) == bid) { bestLive = sb; bestLiveScore = 1.0; break; }
-      if (_int(sb['bilyoner_id']) != null) continue;
-      final hs  = _sim(bHome, _norm(sb['home_team']?.toString() ?? ''));
-      final as_ = _sim(bAway, _norm(sb['away_team']?.toString() ?? ''));
-      if (hs < 0.45 || as_ < 0.45) continue;
-      final s = (hs + as_) / 2;
-      if (s > bestLiveScore) { bestLiveScore = s; bestLive = sb; }
+  // ═══ 2) Aktif canlı maçların fixture_id listesi ═══════════════════
+  print('\n── Mevcut live durum sorgulanıyor ──');
+  final Set<int> liveFixtureIds = {};
+  try {
+    final rows = await sb
+        .from('live_matches')
+        .select('bilyoner_id')
+        .inFilter('status_short', ['1H', '2H', 'HT', 'ET', 'BT', 'P', 'LIVE']);
+    for (final row in rows) {
+      final fid = row['bilyoner_id'] as int?;
+      if (fid != null) liveFixtureIds.add(fid);
     }
-    if (bestLive != null && bestLiveScore >= 0.55) {
-      final fid = _int(bestLive['fixture_id'])!;
-      if (_int(bestLive['bilyoner_id']) != bid) {
-        print('  [LINK] [LIVE] Bilyoner:$bid <-> Supabase:$fid (${bestLiveScore.toStringAsFixed(2)}) | ${bm["home"]} vs ${bm["away"]}');
-        await _patch('live_matches', fid, {'bilyoner_id': bid});
+    print('  ⚽ Aktif canlı maç: ${liveFixtureIds.length}');
+  } catch (e) { print('  ⚠️  Canlı durum sorgulanamadı: $e'); }
+
+  // ═══ 3) Mackolik verilerini çek ve işle ══════════════════════════
+  print('\n── Mackolik verileri çekiliyor (${totalDays} gün) ──');
+
+  final List<Map<String, dynamic>> liveUpserts   = [];
+  final List<Map<String, dynamic>> futureUpserts = [];
+
+  for (final day in days) {
+    print('\n  📆 ${day.ddmmyyyy}');
+    await Future.delayed(const Duration(milliseconds: 300)); // nazik davran
+
+    final matches = await _fetchMackolikDay(day.ddmmyyyy);
+
+    for (final m in matches) {
+      final id     = (m[0] as num).toInt();
+      final homeId = (m[1] as num?)?.toInt();
+      final awayId = (m[3] as num?)?.toInt();
+      final htn    = (m[2] as String?) ?? '';
+      final atn    = (m[4] as String?) ?? '';
+      final statusTx = (m[6] as String?) ?? '';
+      final scoreTx  = (m[7] as String?) ?? '';
+      final brdId  = (m[14] as num?)?.toInt();
+      final lgArr  = m[36] as List<dynamic>? ?? const [];
+      final lgId   = lgArr.length > 2 ? (lgArr[2] as num?)?.toInt() ?? 0 : 0;
+      final lgName = lgArr.length > 3 ? lgArr[3] as String? ?? '' : '';
+      final cntryTr = lgArr.length > 1 ? lgArr[1] as String? ?? '' : '';
+
+      final country  = _countryFromTr(cntryTr);
+      final homeLogo = logoIndex.resolve(htn, country, homeId);
+      final awayLogo = logoIndex.resolve(atn, country, awayId);
+      final rawData  = _buildRawData(m, homeLogo: homeLogo, awayLogo: awayLogo, country: country);
+
+      final short = _statusShort(statusTx);
+
+      // ── future_matches: tüm günler, tüm maçlar ──
+      futureUpserts.add({
+        'bilyoner_id': id,
+        'date':        day.ymd,
+        'league_id':   lgId,
+        'data':        rawData,
+        'updated_at':  DateTime.now().toIso8601String(),
+      });
+
+      // ── live_matches: sadece bugün, sadece NS ve henüz canlı olmayan maçlar ──
+      if (day.ymd == todayYMD && short == 'NS' && !liveFixtureIds.contains(id)) {
+        int? homeGoals, awayGoals;
+        if (scoreTx.contains('-')) {
+          final parts = scoreTx.split('-');
+          homeGoals = int.tryParse(parts[0].trim());
+          awayGoals = int.tryParse(parts.length > 1 ? parts[1].trim() : '');
+        }
+
+        liveUpserts.add({
+          'bilyoner_id':  id,
+          'home_team':    htn,
+          'away_team':    atn,
+          'home_team_id': homeId,
+          'away_team_id': awayId,
+          'home_logo':    homeLogo,
+          'away_logo':    awayLogo,
+          'home_score':   homeGoals ?? 0,
+          'away_score':   awayGoals ?? 0,
+          'status_short': 'NS',
+          'elapsed_time': null,
+          'league_id':    lgId,
+          'league_name':  lgName,
+          'league_logo':  '',
+          'betradar_id':  brdId,
+          'score_source': 'mackolik',
+          'raw_data':     rawData,
+          'updated_at':   DateTime.now().toIso8601String(),
+        });
       }
-      liveMatched++; continue;
-    }
-
-    Map<String, dynamic>? bestFut; double bestFutScore = 0;
-    for (final fb in futList) {
-      if (_int(fb['bilyoner_id']) == bid) { bestFut = fb; bestFutScore = 1.0; break; }
-      if (_int(fb['bilyoner_id']) != null) continue;
-      final hs  = _sim(bHome, _norm(fb['home'].toString()));
-      final as_ = _sim(bAway, _norm(fb['away'].toString()));
-      if (hs < 0.45 || as_ < 0.45) continue;
-      final s = (hs + as_) / 2;
-      if (s > bestFutScore) { bestFutScore = s; bestFut = fb; }
-    }
-    if (bestFut != null && bestFutScore >= 0.55) {
-      final fid = _int(bestFut['fixture_id'])!;
-      if (_int(bestFut['bilyoner_id']) != bid) {
-        print('  [LINK] [FUTURE] Bilyoner:$bid <-> Supabase:$fid (${bestFutScore.toStringAsFixed(2)}) | ${bm["home"]} vs ${bm["away"]}');
-        await _patch('future_matches', fid, {'bilyoner_id': bid});
-      }
-      futMatched++;
-    } else {
-      skipped++;
     }
   }
 
-  print('========================================');
-  print('  [OK]   Live eslendi  : $liveMatched');
-  print('  [OK]   Future eslendi: $futMatched');
-  print('  [WARN] Eslesmedi     : $skipped');
-  print('  [INFO] Toplam Bilyoner: ${bilyonerMatches.length}');
-  print('========================================');
-  exit(0);
+  // ═══ 4) Batch upsert öncesi deduplicate ═══
+  final Map<int, Map<String, dynamic>> liveMap = {};
+  for (final r in liveUpserts) {
+    liveMap[r['bilyoner_id'] as int] = r;
+  }
+  final Map<int, Map<String, dynamic>> futureMap = {};
+  for (final r in futureUpserts) {
+    futureMap[r['bilyoner_id'] as int] = r;
+  }
+
+  // BURASI DÜZELTİLDİ: Tekilleştirilen listeleri oluşturuyoruz
+  final uniqueLiveUpserts = liveMap.values.toList();
+  final uniqueFutureUpserts = futureMap.values.toList();
+    
+  // ═══ 5) Batch upsert ════════════════════════════════════════════════
+  print('\n── Yazılıyor ──');
+  // Loglarda da tekil (doğru) kayıt sayısını gösteriyoruz
+  print('  live_matches  : ${uniqueLiveUpserts.length} kayıt');
+  print('  future_matches: ${uniqueFutureUpserts.length} kayıt');
+
+  // Supabase'e orijinal (mükerrer olabilen) listeleri DEĞİL, unique... listelerini gönderiyoruz
+  final liveErr   = await _batchUpsert(sb, 'live_matches',   uniqueLiveUpserts,   'bilyoner_id');
+  final futureErr = await _batchUpsert(sb, 'future_matches', uniqueFutureUpserts, 'bilyoner_id');
+
+  // ═══ 6) Rapor ═══════════════════════════════════════════════════════
+  logoIndex.printReport();
+
+  final totalErr = liveErr + futureErr;
+  print('\n═══════════════════════════════════════════');
+  print('  🗂  Logo index     : ${logoIndex._names.length} takım');
+  print('  ✅ Logo eşleşti   : ${logoIndex.matched}');
+  print('  ⬜ Logo fallback   : ${logoIndex.fallback}');
+  print('  ✅ live_matches   : ${uniqueLiveUpserts.length - liveErr} yazıldı');
+  print('  ✅ future_matches : ${uniqueFutureUpserts.length - futureErr} yazıldı');
+  if (liveFixtureIds.isNotEmpty) print('  ⚽ Canlı korunan  : ${liveFixtureIds.length}');
+  if (totalErr > 0) print('  ❌ Hatalı         : $totalErr');
+  print('═══════════════════════════════════════════');
+
+  await sb.dispose();
+  exit(totalErr > 0 ? 1 : 0);
 }
