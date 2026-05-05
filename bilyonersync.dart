@@ -12,7 +12,7 @@ const _bilyonerBase  = 'https://www.bilyoner.com';
 const _platformToken = '40CAB7292CD83F7EE0631FC35A0AFC75';
 const _deviceId      = 'C1A34687-8F75-47E8-9FF9-1D231F05782E';
 
-// ── Takım İsim Normalizasyon Sabitleri ──
+// ── sync_fixtures(3)'ten alınan Takım İsim Normalizasyon Sabitleri ──
 const _nicknames = <String, String>{
   'spurs': 'tottenham',
   'inter': 'internazionale',
@@ -40,39 +40,36 @@ Future<void> main() async {
   }
 
   // ── 1. Bilyoner'den canlı futbol maçlarını çek ─────────────────
-  print('📡 Bilyoner maç listesi (V3 API) çekiliyor...');
+  print('📡 Bilyoner maç listesi çekiliyor...');
 
   final List<Map<String, dynamic>> rawEvents = [];
 
-  // Yeni V3 API Uç Noktaları (HAR dosyasından tespit edilenler)
+  // YÖNTEM A: HTML Kazıma (En güvenilir yöntem - 401 ve 400 API engellerini aşar)
+  await _scrapeHtml('$_bilyonerBase/canli-iddaa', rawEvents);
+  await _scrapeHtml('$_bilyonerBase/iddaa', rawEvents);
+
+  // YÖNTEM B: API Uç Noktaları (HTML kazıma yetmezse yedek olarak denenir)
   final endpoints = [
-    '$_bilyonerBase/api/v3/mobile/aggregator/gamelist/sport/1/v1', // Sadece Futbol Bülteni
-    '$_bilyonerBase/api/v3/mobile/aggregator/live/sport/1/v1',     // Sadece Canlı Futbol
-    '$_bilyonerBase/api/v3/mobile/aggregator/gamelist/all/v1',     // Tüm Bülten (Yedek)
+    '$_bilyonerBase/api/v3/mobile/aggregator/gamelist/sport/1/v1',
+    '$_bilyonerBase/api/v3/mobile/aggregator/live/sport/1/v1',
+    '$_bilyonerBase/api/mobile/live-score/event/v2/sport-list?sportType=SOCCER',
   ];
 
   for (final url in endpoints) {
     try {
-      print('  [LOG] İstek atılıyor: $url');
-      final res = await http.get(
-        Uri.parse(url),
-        headers: _bilyonerHeaders(),
-      ).timeout(const Duration(seconds: 20));
-
+      print('  [LOG] API İstek atılıyor: $url');
+      final res = await http.get(Uri.parse(url), headers: _bilyonerHeaders()).timeout(const Duration(seconds: 15));
       if (res.statusCode == 200) {
-        final body = jsonDecode(res.body);
-        _extractMatchesRecursive(body, rawEvents);
-        print('  ✅ Başarılı. (Şu ana kadar bulunan toplam raw event: ${rawEvents.length})');
+        _extractMatchesRecursive(jsonDecode(res.body), rawEvents);
       } else {
-        print('  ⚠️ HTTP Hata Kodu: ${res.statusCode}');
+        print('  ⚠️ API HTTP Hata Kodu: ${res.statusCode}');
       }
     } catch (e) {
-      print('  ❌ İstisna (exception) hatası: $e');
+      print('  ❌ API İstisna hatası: $e');
     }
   }
 
-  // Rekürsif arama sonucu aynı maçlar farklı sayfalarda birden fazla kez bulunmuş olabilir.
-  // ID'ye göre tekilleştirme (Deduplication) yapıyoruz.
+  // Benzersizleştirme (Deduplication - Çift çekilenleri sil)
   final uniqueMatches = <int, Map<String, dynamic>>{};
   for (final m in rawEvents) {
     uniqueMatches[m['id'] as int] = m;
@@ -125,6 +122,7 @@ Future<void> main() async {
           ? jsonDecode(row['data'] as String)
           : row['data'];
       final payload = d is List ? d[0] : d;
+      // future_matches -> data içindeki takımları çıkartma
       home = payload?['teams']?['home']?['name']?.toString() ?? '';
       away = payload?['teams']?['away']?['name']?.toString() ?? '';
     } catch (e) {}
@@ -150,7 +148,7 @@ Future<void> main() async {
     Map? bestLive; double bestLiveScore = 0;
     for (final sb in liveList) {
       if (_int(sb['bilyoner_id']) == bid) { bestLive = sb; bestLiveScore = 1.0; break; }
-      if (_int(sb['bilyoner_id']) != null) continue;
+      if (_int(sb['bilyoner_id']) != null) continue; // başka ID atanmışsa atla
 
       final hs = _sim(bHome, _norm(sb['home_team']?.toString() ?? ''));
       final as_ = _sim(bAway, _norm(sb['away_team']?.toString() ?? ''));
@@ -166,14 +164,14 @@ Future<void> main() async {
         await _patch('live_matches', fid, {'bilyoner_id': bid});
       }
       liveMatched++;
-      continue; 
+      continue; // Live'da bulduysak future'a bakmaya gerek yok
     }
 
-    // 2. future_matches içinde eşleşme ara
+    // 2. future_matches içinde eşleşme ara (Live'da bulunamadıysa)
     Map<String, dynamic>? bestFut; double bestFutScore = 0;
     for (final fb in futList) {
       if (_int(fb['bilyoner_id']) == bid) { bestFut = fb; bestFutScore = 1.0; break; }
-      if (_int(fb['bilyoner_id']) != null) continue; 
+      if (_int(fb['bilyoner_id']) != null) continue; // Başka id yazılmış, geç.
 
       final hs  = _sim(bHome, _norm(fb['home'].toString()));
       final as_ = _sim(bAway, _norm(fb['away'].toString()));
@@ -204,9 +202,47 @@ Future<void> main() async {
   exit(0);
 }
 
-// ── V3 API İçin Dinamik Rekürsif JSON Ayrıştırıcı ──────────────
-// JSON ne kadar derin veya yapısı ne kadar farklı olursa olsun,
-// içinde id, htn (home team) ve atn (away team) olan tüm objeleri bulur.
+// ── HTML Gömülü State Kazıyıcı (401/400 API Engellerini Aşar) ──
+Future<void> _scrapeHtml(String url, List<Map<String, dynamic>> target) async {
+  try {
+    print('  [LOG] HTML Web Scraper Kazıyor: $url');
+    final res = await http.get(Uri.parse(url), headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
+    }).timeout(const Duration(seconds: 15));
+    
+    if (res.statusCode == 200) {
+      // 1. window.__INITIAL_STATE__ yapısını bul (Modern JS Framework)
+      final stateRegex = RegExp(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', dotAll: true);
+      final match = stateRegex.firstMatch(res.body);
+      
+      if (match != null) {
+        final data = jsonDecode(match.group(1)!);
+        int initialCount = target.length;
+        _extractMatchesRecursive(data, target);
+        print('  ✅ HTML State (${target.length - initialCount} maç) başarıyla çekildi.');
+      } else {
+        // 2. Yedek: Next.js formatı (__NEXT_DATA__)
+        final nextRegex = RegExp(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', dotAll: true);
+        final nextMatch = nextRegex.firstMatch(res.body);
+        if (nextMatch != null) {
+          final data = jsonDecode(nextMatch.group(1)!);
+          _extractMatchesRecursive(data, target);
+          print('  ✅ HTML Next.js State başarıyla çekildi.');
+        } else {
+          print('  ⚠️ HTML içinde eşleşen JSON bloğu bulunamadı.');
+        }
+      }
+    } else {
+      print('  ⚠️ HTML Kazıma Hatası. HTTP Kodu: ${res.statusCode}');
+    }
+  } catch (e) {
+    print('  ⚠️ HTML Kazıma İstisnası ($url): $e');
+  }
+}
+
+// ── Dinamik Rekürsif JSON Ayrıştırıcı (Her Yerden Çeker) ───────
+// API veya HTML JSON'ının yapısı ne kadar farklı olursa olsun 
+// id, htn (home team) ve atn (away team) olan tüm objeleri cımbızla toplar.
 void _extractMatchesRecursive(dynamic node, List<Map<String, dynamic>> target) {
   if (node is List) {
     for (final item in node) {
@@ -224,6 +260,7 @@ void _extractMatchesRecursive(dynamic node, List<Map<String, dynamic>> target) {
         'away': atn,
       });
     }
+    // Alt düğümlere girmeye devam et
     for (final value in node.values) {
       _extractMatchesRecursive(value, target);
     }
