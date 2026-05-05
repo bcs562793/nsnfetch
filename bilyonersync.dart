@@ -282,7 +282,6 @@ Future<void> _patch(String table, int fid, Map<String, dynamic> data) async {
 }
 
 // ── Bilyoner headers ───────────────────────────────────────────
-import 'dart:math';
 
 // Mevcut _cachedAuthToken ve _cachedDeviceId değişkenleri yukarıda tanımlı olmalı
 String? _cachedAuthToken;
