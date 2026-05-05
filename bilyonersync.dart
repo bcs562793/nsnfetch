@@ -1,18 +1,18 @@
 // bilyoner_id_sync.dart
-// Bilyoner /iddaa HTML'inden mac ID + takim adi ceker,
-// future_matches tablosundaki eslesen maclara bilyoner_id yazar.
+// /api/v3/mobile/aggregator/gamelist/all/v1 endpoint'inden
+// events{id:{htn,atn}} yapisiyla mac listesi ceker,
+// future_matches tablosuna bilyoner_id yazar.
 
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'package:http/http.dart' as http;
 
 final _sbUrl = Platform.environment['SUPABASE_URL'] ?? '';
 final _sbKey = Platform.environment['SUPABASE_KEY'] ?? '';
 
 const _bilyonerBase = 'https://www.bilyoner.com';
+const _platformToken = '40CAB7292CD83F7EE0631FC35A0AFC75';
 
-// Normalizasyon
 const _nicknames = <String, String>{
   'spurs': 'tottenham', 'inter': 'internazionale',
 };
@@ -58,72 +58,63 @@ double _sim(String a, String b) {
   return j * 0.5;
 }
 
-// ── ADIM 1: Bilyoner /iddaa HTML'inden mac listesi cek ─────────────
-// HTML'de: <a title="Home - Away" href="/mac-karti/futbol/ID/oranlar...
-// Bu sekilde hem ID hem takim adi tek satirda geliyor.
-Future<Map<int, Map<String,String>>> _fetchBilyonerFromHtml() async {
-  final result = <int, Map<String,String>>{};
-  // Bugun + sonraki gunler icin URL listesi
-  final today = DateTime.now().toUtc().add(const Duration(hours: 3));
-  final urls = <String>[];
-  for (int i = 0; i < 5; i++) {
-    final d = today.add(Duration(days: i));
-    final ds = '${d.year}-${d.month.toString().padLeft(2,"0")}-${d.day.toString().padLeft(2,"0")}';
-    urls.add('$_bilyonerBase/iddaa/futbol?date=$ds');
-  }
-  urls.insert(0, '$_bilyonerBase/iddaa');        // varsayilan sayfa
-  urls.insert(1, '$_bilyonerBase/iddaa/futbol'); // futbol filtresi
+Map<String, String> _apiHeaders() => {
+  'accept':               'application/json, text/plain, */*',
+  'accept-language':      'tr,en-US;q=0.9,en;q=0.8',
+  'cache-control':        'no-cache',
+  'pragma':               'no-cache',
+  'platform-token':       _platformToken,
+  'x-client-channel':     'WEB',
+  'x-client-app-version': '3.98.1',
+  'referer':              '$_bilyonerBase/iddaa',
+  'user-agent':           'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+};
 
-  // Regex: title="Home - Away" href="/mac-karti/futbol/ID/
-  final re = RegExp(
-    r'title="([^"]+)" href="/mac-karti/futbol/(\d+)/oranlar',
-  );
-
-  for (final url in urls) {
+// ADIM 1: Bilyoner gamelist API'den mac listesi cek
+// events objesi: {"ID": {"htn": "Home", "atn": "Away", ...}}
+// tabType=1 -> normal iddaa (190 mac, 4 gun)
+Future<Map<int, Map<String, String>>> _fetchBilyonerMatches() async {
+  final result = <int, Map<String, String>>{};
+  final tabTypes = [1, 137]; // 1=normal, 137=diger tab
+  for (final tab in tabTypes) {
+    final url = '$_bilyonerBase/api/v3/mobile/aggregator/gamelist/all/v1'
+        '?tabType=$tab&bulletinType=2';
     try {
-      print('  [LOG] HTML cekiliyor: $url');
-      final res = await http.get(Uri.parse(url), headers: {
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
-        'accept': 'text/html,application/xhtml+xml',
-        'accept-language': 'tr-TR,tr;q=0.9',
-        'referer': '$_bilyonerBase/',
-      }).timeout(const Duration(seconds: 15));
-
+      print('  [LOG] API: tabType=$tab');
+      final res = await http.get(Uri.parse(url), headers: _apiHeaders())
+          .timeout(const Duration(seconds: 15));
       if (res.statusCode != 200) {
-        print('  [WARN] HTTP ${res.statusCode}: $url'); continue;
+        print('  [WARN] HTTP ${res.statusCode} tabType=$tab'); continue;
       }
-
-      int found = 0;
-      for (final m in re.allMatches(res.body)) {
-        final title = m.group(1) ?? '';   // 'Home - Away'
-        final id    = int.tryParse(m.group(2) ?? '');
-        if (id == null || title.isEmpty) continue;
-        // title'i ' - ' ile bol -> home / away
-        final sep = title.indexOf(' - ');
-        if (sep < 0) continue;
-        final home = title.substring(0, sep).trim();
-        final away = title.substring(sep + 3).trim();
-        if (home.isEmpty || away.isEmpty) continue;
-        result.putIfAbsent(id, () => {'home': home, 'away': away});
-        found++;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final events = data['events'] as Map<String, dynamic>?;
+      if (events == null) { print('  [WARN] events null tabType=$tab'); continue; }
+      int count = 0;
+      for (final entry in events.entries) {
+        final id  = int.tryParse(entry.key);
+        final ev  = entry.value as Map<String, dynamic>?;
+        final htn = ev?['htn']?.toString();
+        final atn = ev?['atn']?.toString();
+        if (id == null || htn == null || htn.isEmpty || atn == null || atn.isEmpty) continue;
+        result.putIfAbsent(id, () => {'home': htn, 'away': atn});
+        count++;
       }
-      print('  [LOG] $url -> $found mac ID bulundu');
+      print('  [LOG] tabType=$tab: $count mac');
     } catch (e) {
-      print('  [WARN] $url hata: $e');
+      print('  [ERROR] tabType=$tab: $e');
     }
-    await Future.delayed(const Duration(milliseconds: 300));
+    await Future.delayed(const Duration(milliseconds: 200));
   }
   return result;
 }
 
-// ── ADIM 2: future_matches'den bilyoner_id bos olanlari cek ────────
-Future<List<Map<String,dynamic>>> _fetchFutureMatches() async {
-  final now = DateTime.now().toUtc().add(const Duration(hours: 3));
-  final today  = '${now.year}-${now.month.toString().padLeft(2,"0")}-${now.day.toString().padLeft(2,"0")}';
-  final cutoff = () {
-    final d = now.add(const Duration(days: 5));
-    return '${d.year}-${d.month.toString().padLeft(2,"0")}-${d.day.toString().padLeft(2,"0")}';
-  }();
+// ADIM 2: future_matches'den bilyoner_id bos olan kayitlari cek
+Future<List<Map<String, dynamic>>> _fetchFutureMatches() async {
+  final now    = DateTime.now().toUtc().add(const Duration(hours: 3));
+  final pad    = (int n) => n.toString().padLeft(2, '0');
+  final today  = '${now.year}-${pad(now.month)}-${pad(now.day)}';
+  final end    = now.add(const Duration(days: 5));
+  final cutoff = '${end.year}-${pad(end.month)}-${pad(end.day)}';
   final res = await http.get(
     Uri.parse('$_sbUrl/rest/v1/future_matches'
         '?select=fixture_id,data'
@@ -134,9 +125,9 @@ Future<List<Map<String,dynamic>>> _fetchFutureMatches() async {
     headers: {'apikey': _sbKey, 'Authorization': 'Bearer $_sbKey'},
   ).timeout(const Duration(seconds: 20));
   if (res.statusCode != 200) {
-    print('[ERROR] future_matches cekme: ${res.statusCode}'); return [];
+    print('[ERROR] future_matches: ${res.statusCode}'); return [];
   }
-  final rows = <Map<String,dynamic>>[];
+  final rows = <Map<String, dynamic>>[];
   for (final row in (jsonDecode(res.body) as List).cast<Map>()) {
     final fid = row['fixture_id'] as int?; if (fid == null) continue;
     String home = '', away = '';
@@ -154,7 +145,7 @@ Future<List<Map<String,dynamic>>> _fetchFutureMatches() async {
   return rows;
 }
 
-// ── ADIM 3: PATCH bilyoner_id ───────────────────────────────────────
+// ADIM 3: PATCH - sadece bilyoner_id kolonunu guncelle
 Future<void> _patch(int fixtureId, int bilyonerId) async {
   final res = await http.patch(
     Uri.parse('$_sbUrl/rest/v1/future_matches?fixture_id=eq.$fixtureId'),
@@ -176,27 +167,27 @@ Future<void> main() async {
     print('[ERROR] SUPABASE_URL / SUPABASE_KEY eksik'); exit(1);
   }
 
-  // 1. Bilyoner HTML'den mac listesi
-  final bilyonerMap = await _fetchBilyonerFromHtml();
+  // 1. Bilyoner API'den mac listesi
+  final bilyonerMap = await _fetchBilyonerMatches();
   if (bilyonerMap.isEmpty) {
-    print('[ERROR] Bilyoner HTML parse edilemedi'); exit(1);
+    print('[ERROR] Bilyoner mac listesi bos'); exit(1);
   }
   print('[INFO] Bilyoner toplam: ${bilyonerMap.length} benzersiz mac');
 
-  // 2. future_matches bilyoner_id bos kayitlar
+  // 2. Supabase'den eslenecek kayitlar
   final futureRows = await _fetchFutureMatches();
   if (futureRows.isEmpty) {
-    print('[INFO] Esleme yapilacak kayit yok'); exit(0);
+    print('[INFO] Eslenecek kayit yok'); exit(0);
   }
 
-  // 3. Eslestir ve yaz
+  // 3. Eslestir ve bilyoner_id yaz
   int matched = 0, skipped = 0;
   for (final entry in bilyonerMap.entries) {
     final bid   = entry.key;
     final bHome = _norm(entry.value['home']!);
     final bAway = _norm(entry.value['away']!);
 
-    Map<String,dynamic>? best; double bestScore = 0;
+    Map<String, dynamic>? best; double bestScore = 0;
     for (final row in futureRows) {
       final hs  = _sim(bHome, _norm(row['home']));
       final as_ = _sim(bAway, _norm(row['away']));
@@ -216,10 +207,10 @@ Future<void> main() async {
   }
 
   print('========================================');
-  print('  [OK]  Eslenen  : $matched');
-  print('  [SKIP] Eslesmeyen: $skipped');
-  print('  [INFO] Bilyoner : ${bilyonerMap.length} mac');
-  print('  [INFO] Supabase : ${futureRows.length} kayit');
+  print('  [OK]   Eslenen    : $matched');
+  print('  [SKIP] Eslesmeyen : $skipped');
+  print('  [INFO] Bilyoner   : ${bilyonerMap.length} mac');
+  print('  [INFO] Supabase   : ${futureRows.length} kayit');
   print('========================================');
   exit(0);
 }
