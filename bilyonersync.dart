@@ -108,39 +108,59 @@ Future<Map<int, Map<String, String>>> _fetchBilyonerMatches() async {
   return result;
 }
 
-// ADIM 2: future_matches'den bilyoner_id bos olan kayitlari cek
+// ADIM 2: future_matches'den bilyoner_id bos olan kayitlari cek (pagination)
 Future<List<Map<String, dynamic>>> _fetchFutureMatches() async {
   final now    = DateTime.now().toUtc().add(const Duration(hours: 3));
   final pad    = (int n) => n.toString().padLeft(2, '0');
   final today  = '${now.year}-${pad(now.month)}-${pad(now.day)}';
   final end    = now.add(const Duration(days: 5));
   final cutoff = '${end.year}-${pad(end.month)}-${pad(end.day)}';
-  final res = await http.get(
-    Uri.parse('$_sbUrl/rest/v1/future_matches'
-        '?select=fixture_id,data'
-        '&bilyoner_id=is.null'
-        '&date=gte.$today'
-        '&date=lte.$cutoff'
-        '&limit=2000'),
-    headers: {'apikey': _sbKey, 'Authorization': 'Bearer $_sbKey'},
-  ).timeout(const Duration(seconds: 20));
-  if (res.statusCode != 200) {
-    print('[ERROR] future_matches: ${res.statusCode}'); return [];
-  }
+
   final rows = <Map<String, dynamic>>[];
-  for (final row in (jsonDecode(res.body) as List).cast<Map>()) {
-    final fid = row['fixture_id'] as int?; if (fid == null) continue;
-    String home = '', away = '';
-    try {
-      final d = row['data'] is String
-          ? jsonDecode(row['data'] as String) as Map
-          : row['data'] as Map;
-      home = d['teams']?['home']?['name']?.toString() ?? '';
-      away = d['teams']?['away']?['name']?.toString() ?? '';
-    } catch (_) {}
-    if (home.isEmpty && away.isEmpty) continue;
-    rows.add({'fixture_id': fid, 'home': home, 'away': away});
+  const pageSize = 1000;
+  int offset = 0;
+
+  while (true) {
+    final res = await http.get(
+      Uri.parse('$_sbUrl/rest/v1/future_matches'
+          '?select=fixture_id,data'
+          '&bilyoner_id=is.null'
+          '&date=gte.$today'
+          '&date=lte.$cutoff'
+          '&limit=$pageSize'
+          '&offset=$offset'),
+      headers: {
+        'apikey':        _sbKey,
+        'Authorization': 'Bearer $_sbKey',
+        'Prefer':        'count=exact',
+      },
+    ).timeout(const Duration(seconds: 20));
+
+    if (res.statusCode != 200) {
+      print('[ERROR] future_matches: ${res.statusCode}'); break;
+    }
+
+    final page = (jsonDecode(res.body) as List).cast<Map>();
+    for (final row in page) {
+      final fid = row['fixture_id'] as int?; if (fid == null) continue;
+      String home = '', away = '';
+      try {
+        final d = row['data'] is String
+            ? jsonDecode(row['data'] as String) as Map
+            : row['data'] as Map;
+        home = d['teams']?['home']?['name']?.toString() ?? '';
+        away = d['teams']?['away']?['name']?.toString() ?? '';
+      } catch (_) {}
+      if (home.isEmpty && away.isEmpty) continue;
+      rows.add({'fixture_id': fid, 'home': home, 'away': away});
+    }
+
+    print('  [LOG] Sayfa offset=$offset: ${page.length} satir alindi');
+    if (page.length < pageSize) break; // son sayfa
+    offset += pageSize;
+    await Future.delayed(const Duration(milliseconds: 100));
   }
+
   print('[INFO] future_matches: ${rows.length} kayit (bilyoner_id bos)');
   return rows;
 }
